@@ -22,17 +22,22 @@ Web5 Connect Protocol
 
 The Web5 Connect Protocol enables applications to request delegated access to a
 user's [Decentralized Web Node (DWN)](https://github.com/enboxorg/dwn-spec) through
-their wallet or identity agent. It builds on SIOPv2 (Self-Issued OpenID Provider v2)
-and OAuth 2.0 Pushed Authorization Requests (PAR) to establish a secure, end-to-end
-encrypted channel between an application and a wallet, mediated by a stateless
-connect server.
+their wallet or identity agent. It defines **one** capability-delegation handshake —
+a signed-and-encrypted request/response envelope — carried over interchangeable
+**channels**: a relay channel (QR code, deep link, CLI) inspired by OAuth 2.0
+Pushed Authorization Requests (PAR), and a browser popup channel over
+`window.postMessage`. Both directions are signed AND encrypted on every channel;
+no plaintext protocol payload ever crosses a channel or touches an intermediary.
 
 Upon successful connection, the application receives:
 
-- A **delegate DID** — a new DID created by the wallet that the application uses to
-  act on behalf of the user's identity.
+- A **delegate DID** — either a fresh DID minted by the wallet (with its private
+  keys) or an application-supplied DID the wallet granted to, which the
+  application uses to act on behalf of the user's identity.
 - **Permission grants** — DWN authorization records that grant the delegate DID
-  specific capabilities (read, write, sync, etc.) scoped to one or more protocols.
+  specific capabilities (read, write, delete) scoped to one or more protocols.
+- **Session revocation mappings** — per-grant revocation grants that let the
+  application revoke its own session on disconnect.
 
 This specification defines the complete protocol flow, message formats, encryption
 schemes, and security properties required for interoperable wallet-to-application
@@ -53,30 +58,58 @@ as the means by which to communicate feedback and contributions.
 
 [[def:Client, Application, Relying Party]]
 ~ The application requesting access to a user's DWN. The Client initiates the
-connect flow by generating an auth request and presenting a connection URI
-(QR code or deep link) to the user.
+connect flow by generating a [[ref:Connect Request]] and delivering it over a
+channel — as a QR code or deep link on the relay channel, or directly over
+`postMessage` on the popup channel.
 
 [[def:Provider, Wallet, Identity Agent]]
 ~ The software that manages the user's DIDs, keys, and DWN access. The Provider
-receives the auth request, presents it to the user for consent, creates a
-delegate DID and permission grants, and returns them to the Client.
+receives the Connect Request, presents it to the user for consent, performs the
+approval ceremony (delegate creation, protocol preparation, grant creation), and
+returns a sealed [[ref:Connect Response]] to the Client.
 
 [[def:Connect Server, Relay]]
-~ A stateless intermediary that relays encrypted messages between the
-[[ref:Client]] and [[ref:Provider]]. The Connect Server never sees plaintext —
-it only stores and serves opaque encrypted blobs. The Connect Server ****MAY****
-be co-located with a DWN Server or operated independently.
+~ An untrusted store-and-forward intermediary used by the relay channel. The
+Connect Server never sees plaintext — it only stores and serves opaque sealed
+envelopes. It ****MAY**** be co-located with a DWN Server or operated
+independently. The popup channel does not use a Connect Server.
+
+[[def:Channel, Transport]]
+~ The mechanism that carries sealed envelopes between the [[ref:Client]] and the
+[[ref:Provider]]. This specification defines two channels: the
+[relay channel](#relay-channel) (`direct_post` reply mode) and the
+[popup channel](#popup-channel) (`post_message` reply mode). Channels carry
+ciphertext only.
+
+[[def:Connect Request]]
+~ The payload a Client sends to a Provider asking for DWN permissions: the
+requesting app's identity hints, the permission requests, and the handshake
+parameters (`nonce`, `state`, `responseKey`, reply descriptor). Signed as a JWT
+and sealed as a JWE.
+
+[[def:Connect Response]]
+~ The payload a Provider returns after user approval: the delegate DID (and its
+portable form for wallet-minted delegates), the permission grants, and the
+session revocation mappings, with the request's `nonce` and `state` echoed.
+Signed as a JWT and sealed as a JWE to the request's [[ref:Response Key]].
 
 [[def:Delegate DID]]
-~ A new DID (typically `did:jwk`) created by the [[ref:Provider]] specifically
-for a connection session. The [[ref:Client]] uses this DID to sign DWN messages
-on behalf of the user. The delegate DID's private keys are transferred to the
-Client as part of the auth response.
+~ The DID that receives the permission grants for a connection session. In the
+default flow the Provider mints a fresh `did:jwk` and transfers its private keys
+to the Client inside the sealed response. Alternatively, the Client supplies its
+own delegate DID in the request (`delegateDid`), in which case the delegate's
+private keys never leave the Client.
 
-[[def:Permission Grant]]
+[[def:Response Key]]
+~ A fresh X25519 public key (JWK) generated by the [[ref:Client]] for a single
+handshake and carried in the Connect Request. The Provider seals the Connect
+Response to this key with ECDH-ES. The corresponding private key never leaves
+the Client and ****MUST NOT**** be reused across handshakes.
+
+[[def:Permission Grant, Permission Grants]]
 ~ A DWN authorization record (a `RecordsWrite` to the permissions protocol at
-`https://tbd.website/dwn/permissions`) that grants the [[ref:Delegate DID]]
-specific operations on the user's DWN. See the
+`https://identity.foundation/dwn/permissions`) that grants the
+[[ref:Delegate DID]] specific operations on the user's DWN. See the
 [DWN specification](https://github.com/enboxorg/dwn-spec) Permissions section.
 
 [[def:Delegated Grant]]
@@ -84,131 +117,460 @@ specific operations on the user's DWN. See the
 act on behalf of the grantor (the user). When the [[ref:Client]] uses a delegated
 grant, the DWN treats the message as if it came from the user.
 
+[[def:Session Revocation Grant, Session Revocation Grants]]
+~ A narrowly scoped [[ref:Delegated Grant]] (`Records.Write` on the permissions
+protocol, `contextId` bound to a single session grant's record ID) that allows
+the [[ref:Delegate DID]] to write the revocation record for exactly that grant —
+enabling an application to revoke its own session on disconnect without any
+broader permission-management authority.
+
 [[def:Wallet URI]]
-~ A URI constructed by the [[ref:Client]] that contains the auth request location
-and a symmetric encryption key. Presented to the user as a QR code or deep link
-to launch the [[ref:Provider]].
+~ A URI constructed by the [[ref:Client]] on the relay channel that carries the
+request pointer and a single-use symmetric encryption key in its **fragment**.
+Presented to the user as a QR code or deep link to launch the [[ref:Provider]].
 
 [[def:PIN]]
-~ A short numeric code displayed by the [[ref:Provider]] to the user during the
-connect flow. The user communicates this PIN to the [[ref:Client]] application
-out-of-band. The PIN is used as additional authenticated data (AAD) in the
-auth response encryption, ensuring that only someone who received the PIN from
-the wallet can decrypt the response.
+~ A short code displayed by the [[ref:Provider]] to the user during relay-channel
+flows. The user communicates the PIN to the [[ref:Client]] out-of-band. The PIN
+is folded into the response content-encryption key derivation, so it never
+transits any network channel; a recipient using the wrong PIN fails closed with
+an AEAD authentication failure.
+
+[[def:Deny Token]]
+~ The literal string `DENIED`, delivered by the [[ref:Provider]] in place of a
+sealed [[ref:Connect Response]] when the user rejects the request. Clients
+****MUST**** treat it as a terminal, non-error outcome.
 
 
 ## Overview {#overview}
 
 ### Actors {#actors}
 
-The Web5 Connect Protocol involves three actors:
-
-1. **Client (Application)** — A web or native application that wants to interact
-   with a user's DWN. The Client does not hold the user's real DID; it operates
-   through a [[ref:Delegate DID]] with explicit [[ref:Permission Grants]].
+1. **Client (Application)** — A web, native, or command-line application that
+   wants to interact with a user's DWN. The Client does not hold the user's real
+   DID; it operates through a [[ref:Delegate DID]] with explicit
+   [[ref:Permission Grants]].
 
 2. **Provider (Wallet)** — The user's trusted identity manager. The Provider holds
    the user's real DID(s) and private keys. It evaluates permission requests,
-   obtains user consent, creates delegate credentials, and returns them encrypted
-   to the Client.
+   obtains user consent, prepares protocols, creates delegate credentials and
+   grants, and returns them sealed to the Client.
 
-3. **Connect Server (Relay)** — A simple store-and-forward service that holds
-   encrypted blobs temporarily. It exposes four HTTP endpoints. The Connect Server
-   sees only ciphertext and cannot decrypt or tamper with the exchanged data.
+3. **Connect Server (Relay)** — Relay channel only. A store-and-forward service
+   that holds sealed envelopes temporarily. It exposes four HTTP endpoints, sees
+   only ciphertext, and cannot decrypt or undetectably tamper with the exchanged
+   data.
 
-### Protocol Flow {#protocol-flow}
+### One Protocol, Two Channels {#one-protocol-two-channels}
+
+Every connect handshake exchanges the same two payloads — a
+[[ref:Connect Request]] and a [[ref:Connect Response]] — using the same
+[envelope layer](#envelope-layer): each payload is signed as an EdDSA JWT and
+sealed as a Compact JWE. Channels differ only in:
+
+| | Relay channel | Popup channel |
+|---|---|---|
+| Reply mode (`reply.mode`) | `direct_post` | `post_message` |
+| Request JWE key management | `dir` — single-use 32-byte key in the [[ref:Wallet URI]] fragment | `ECDH-ES` — to the wallet's ephemeral beacon key, origin-bound via `apv` |
+| Response JWE key management | `ECDH-ES` to the [[ref:Response Key]], PIN-strengthened | `ECDH-ES` to the [[ref:Response Key]], no PIN |
+| Intermediary | [[ref:Connect Server]] | None (direct `postMessage`) |
+| Second factor | User-relayed [[ref:PIN]] | Browser origin pinning |
+
+### Relay Channel Flow {#relay-flow}
 
 ```
 Client                     Connect Server                   Provider (Wallet)
   |                              |                               |
-  |  1. POST /connect/par       |                               |
-  |  (encrypted auth request)   |                               |
+  |  1. POST /connect/par        |                               |
+  |  { request: <sealed JWE> }   |                               |
   |----------------------------->|                               |
-  |                              |                               |
-  |  2. PushedAuthResponse       |                               |
-  |  {request_uri, expires_in}  |                               |
+  |  2. 201 {request_uri,        |                               |
+  |          expires_in}         |                               |
   |<-----------------------------|                               |
   |                              |                               |
-  |  3. Construct Wallet URI     |                               |
-  |  (request_uri + enc key)    |                               |
+  |  3. Build Wallet URI         |                               |
+  |  #request_uri=...&encryption_key=...                         |
   |  Display QR / deep link      |                               |
   |                              |                               |
-  |                              |  4. GET /connect/authorize/:id.jwt
-  |                              |  (fetch encrypted auth request)
+  |                              |  4. GET {request_uri}          |
+  |                              |  (single-use)                  |
   |                              |<------------------------------|
-  |                              |                               |
-  |                              |  5. Return encrypted blob     |
+  |                              |  5. sealed request JWE         |
   |                              |------------------------------>|
   |                              |                               |
-  |                              |  6. Decrypt, verify, display   |
-  |                              |     User approves + sees PIN  |
+  |                              |  6. Open envelope, verify JWT, |
+  |                              |     validate; user consents;   |
+  |                              |     wallet displays PIN        |
   |                              |                               |
-  |                              |  7. Create delegate DID       |
-  |                              |     Create permission grants  |
+  |                              |  7. Approval ceremony:         |
+  |                              |     delegate, protocols,       |
+  |                              |     grants, revocation grants  |
   |                              |                               |
-  |                              |  8. POST /connect/callback    |
-  |                              |  (encrypted auth response)    |
+  |                              |  8. POST /connect/callback     |
+  |                              |  id_token=<sealed JWE>&state=  |
   |                              |<------------------------------|
   |                              |                               |
-  |  9. GET /connect/token/:state.jwt                            |
-  |  (poll for auth response)   |                               |
+  |  9. GET /connect/token/{state}.jwt  (poll)                   |
   |----------------------------->|                               |
-  |                              |                               |
-  | 10. Return encrypted blob   |                               |
+  | 10. sealed response JWE      |                               |
   |<-----------------------------|                               |
   |                              |                               |
   | 11. User enters PIN          |                               |
-  | 12. Decrypt + verify         |                               |
-  | 13. Import delegate DID      |                               |
-  |     + permission grants     |                               |
+  | 12. Open envelope (PIN in KDF), value checks                 |
+  | 13. Import delegate + grants                                 |
+```
+
+### Popup Channel Flow {#popup-flow}
+
+```
+Client (dapp)                                Provider (wallet popup)
+  |                                                |
+  |  1. window.open(walletUrl + /dweb-connect) --->|
+  |                                                |
+  |               2. `loaded` beacon               |
+  |     { walletEpk (X25519), walletOrigin }       |
+  |<-----------------------------------------------|
+  |                                                |
+  |  3. Seal request to walletEpk (ECDH-ES,        |
+  |     apv = b64u(walletOrigin))                  |
+  |  4. postMessage sealed request JWE ----------->|
+  |                                                |
+  |               5. Open envelope, verify,        |
+  |                  user consents,                |
+  |                  approval ceremony             |
+  |                                                |
+  |          6. postMessage sealed response JWE    |
+  |             (or `DENIED`)                      |
+  |<-----------------------------------------------|
+  |                                                |
+  |  7. Open envelope (no PIN), value checks       |
 ```
 
 ### Security Goals {#security-goals}
 
-- **End-to-end encryption:** The Connect Server never sees plaintext auth requests
-  or responses.
-- **Man-in-the-middle resistance:** The auth response encryption uses ECDH key
-  agreement plus a user-communicated PIN as authenticated data.
-- **Replay protection:** Random `nonce` and `state` values prevent replay attacks.
+- **End-to-end encryption:** Intermediaries (the Connect Server; the browser's
+  `postMessage` machinery) never see plaintext requests or responses.
+- **Signed both directions:** Every payload is an EdDSA-signed JWT sealed inside
+  the JWE, so tampering and substitution are detectable end-to-end.
+- **Man-in-the-middle resistance:** Relay responses fold a user-communicated PIN
+  into the content-encryption-key derivation; popup envelopes bind browser
+  origins into integrity-protected JWE headers (`apv`), and both sides pin
+  `postMessage` origins.
+- **Replay protection:** Random `nonce` and `state` values are echoed and
+  value-checked; relay blobs are single-use; responses carry a bounded
+  `iat`/`exp` validity window.
 - **Provider DID privacy:** The user's real DID is only revealed inside the
-  encrypted auth response, never to the Connect Server.
-- **One-time retrieval:** Auth requests and responses are deleted from the Connect
-  Server after retrieval, preventing replay.
+  sealed response, never to the Connect Server or the network.
 
 
-## Connect Server Endpoints {#connect-server-endpoints}
+## Envelope Layer {#envelope-layer}
 
-The Connect Server exposes four HTTP endpoints. All paths are relative to the
-Connect Server's base URL.
+Both payloads transit as a **signed JWT sealed inside a Compact JWE**
+([[spec:RFC7516]]) with `cty: "JWT"`. This section defines the JWT signing
+profile and the JWE profiles for each direction.
 
-### Pushed Authorization Request {#endpoint-par}
+### JWT Profile {#jwt-profile}
+
+Connect JWTs ****MUST**** use the following header:
+
+```json
+{
+  "alg": "EdDSA",
+  "kid": "did:jwk:<signer>#0",
+  "typ": "JWT"
+}
+```
+
+- `alg` ****MUST**** be `EdDSA` ([[spec:RFC8037]]). Verifiers ****MUST**** reject
+  any other algorithm.
+- `kid` ****MUST**** reference a verification method of a **`did:jwk`** DID.
+  Verifiers ****MUST**** reject a `kid` whose DID portion does not begin with
+  `did:jwk:`. Resolution of `did:jwk` is a pure local computation — verification
+  involves no network I/O and no resolver ambiguity.
+- The signer's DID is the `kid` value up to (excluding) the `#` fragment.
+
+**Request JWTs** ****MUST**** be signed by the request's `clientDid`. Verifiers
+****MUST**** reject a request whose JWT signer DID does not equal the payload's
+`clientDid` field — a request cannot claim an identifier its signer does not
+control.
+
+**Response JWTs** are signed by the Provider's *response signer*:
+
+- For wallet-minted delegate sessions, the response signer ****SHOULD**** be the
+  minted [[ref:Delegate DID]] itself.
+- When the request pre-supplied a `delegateDid` (whose private keys the Provider
+  does not hold), the response signer ****MUST**** be a fresh, single-use
+  `did:jwk`.
+
+::: note
+The response JWT signer intentionally is **not** the Provider's real DID:
+authenticity of the response is established by the sealed channel (ECDH-ES to
+the request's fresh [[ref:Response Key]], plus the PIN on relay channels), not
+by the JWT signature alone. Signing with a session-scoped DID preserves the
+user's privacy — no interceptor can correlate the ciphertext to the user's real
+identity from key identifiers.
+:::
+
+### Request JWE Profile {#request-jwe-profile}
+
+The signed request JWT is sealed as a Compact JWE with this protected header:
+
+| Parameter | Relay channel | Popup channel |
+|---|---|---|
+| `alg` | `"dir"` | `"ECDH-ES"` |
+| `enc` | `"XC20P"` | `"XC20P"` |
+| `typ` | `"enbox-connect-req"` | `"enbox-connect-req"` |
+| `cty` | `"JWT"` | `"JWT"` |
+| `apv` | — | base64url(UTF8(wallet origin)) |
+| `epk` | — | ephemeral X25519 public key (set by key agreement) |
+
+- **Relay (`dir`):** the content-encryption key is a **single-use 32-byte
+  random key** generated by the Client. It travels only in the
+  [[ref:Wallet URI]] fragment — never in query strings, request bodies, or logs.
+- **Popup (`ECDH-ES`):** the CEK is derived by X25519 ECDH-ES key agreement
+  ([[spec:RFC7518]], Section 4.6) against the wallet's ephemeral beacon key
+  (`walletEpk`), with the Concat KDF. The wallet's origin ****MUST**** be bound
+  into the integrity-protected `apv` header as `base64url(UTF8(origin))`.
+
+`enc` is XChaCha20-Poly1305 (`XC20P`) with a 24-byte (192-bit) nonce; the AAD is
+the base64url-encoded protected header per [[spec:RFC7516]].
+
+**Opening rules.** When opening a request, the Provider ****MUST****:
+
+1. Decrypt with a channel-pinned algorithm allow-list — exactly one of
+   `alg: "dir"` (relay) or `alg: "ECDH-ES"` (popup), and `enc: "XC20P"` only.
+   A JWE presenting any other `alg`/`enc` ****MUST**** be rejected before key
+   material is used.
+2. Verify `typ` equals `enbox-connect-req` and `cty` equals `JWT`.
+3. On the popup channel, value-check the `apv` header against the Provider's
+   **own** origin (`base64url(UTF8(location.origin))`). A mismatch ****MUST****
+   fail the handshake.
+4. Verify the JWT per the [JWT profile](#jwt-profile).
+5. Validate the payload shape per the [Connect Request](#connect-request) schema.
+6. Value-check the JWT signer DID equals the payload `clientDid`.
+
+### Response JWE Profile {#response-jwe-profile}
+
+The signed response JWT is sealed as a Compact JWE with this protected header on
+**both** channels:
+
+```json
+{
+  "alg": "ECDH-ES",
+  "apu": "<base64url(UTF8(request.state))>",
+  "cty": "JWT",
+  "enc": "XC20P",
+  "typ": "enbox-connect-res"
+}
+```
+
+The recipient key is the request's [[ref:Response Key]] — a fresh X25519 public
+JWK generated by the Client for this handshake. The ephemeral sender key appears
+in the `epk` header parameter as a minimal public JWK
+(`{ "kty": "OKP", "crv": "X25519", "x": "..." }`).
+
+#### Content-Encryption-Key Derivation {#cek-derivation}
+
+1. Compute the X25519 shared secret between the sender's ephemeral private key
+   and the recipient's [[ref:Response Key]] (or, on open, between the
+   recipient's private response key and the header `epk`).
+2. Derive the CEK with the **Concat KDF** ([[spec:RFC7518]], Section 4.6):
+   AlgorithmID = UTF8(`enc` value), PartyUInfo / PartyVInfo = the decoded `apu` /
+   `apv` header values (empty when absent), keydatalen = 256 bits.
+3. **PIN strengthening (relay channel only):** when a [[ref:PIN]] is in use, the
+   CEK from step 2 is passed through HKDF-SHA256 ([[spec:RFC5869]]) with
+   `salt = UTF8(pin)` and `info = UTF8("enbox/connect/v2/pin")`, output length
+   32 bytes. The strengthened key is the CEK.
+
+The PIN never transits any channel. A recipient supplying the wrong PIN derives
+a different CEK and fails **closed** with an AEAD authentication tag failure —
+indistinguishable from ciphertext corruption.
+
+**Opening rules.** When opening a response, the Client ****MUST****:
+
+1. Decrypt with allow-lists `alg: "ECDH-ES"` and `enc: "XC20P"` only.
+2. Verify `typ` equals `enbox-connect-res` and `cty` equals `JWT`.
+3. Value-check the `apu` header equals `base64url(UTF8(state))` for the `state`
+   of the originating request.
+4. Verify the JWT per the [JWT profile](#jwt-profile).
+5. Validate the payload shape per the [Connect Response](#connect-response)
+   schema.
+6. Enforce the [response value checks](#response-value-checks).
+
+
+## Connect Request {#connect-request}
+
+The Connect Request is the JWT payload of the sealed request envelope.
+
+### Schema {#request-schema}
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `clientDid` | `string` | Yes | Ephemeral `did:jwk` created by the Client for this handshake. Signs the request JWT. |
+| `appName` | `string` | Yes | Human-readable application name, displayed in the Provider's consent UI. |
+| `appIcon` | `string` | No | Icon URL for the requesting application. |
+| `clientMetadata` | `object` | No | Self-reported client/environment hints (see below). |
+| `permissionRequests` | `array` | Yes | Array of [permission request](#permission-requests) objects. |
+| `requestedSessionTtlSeconds` | `number` | No | Preferred session lifetime in seconds. Providers clamp to policy (see [Session Lifetime](#session-lifetime)). |
+| `delegateDid` | `string` | No | Client-supplied [[ref:Delegate DID]]. When present, the Provider grants to this DID and returns **no** private key material. |
+| `supportedDidMethods` | `string[]` | Yes | DID methods the Client accepts for the connected identity (e.g. `["did:dht", "did:jwk"]`). |
+| `nonce` | `string` | Yes | Random base64url anti-replay token (****RECOMMENDED**** 16 bytes), echoed in the response. |
+| `state` | `string` | Yes | Random base64url correlator (****RECOMMENDED**** 16 bytes), echoed in the response and bound into the response JWE `apu`. |
+| `responseKey` | `object` | Yes | Fresh X25519 **public** JWK (`{kty:"OKP", crv:"X25519", x}`). ****MUST NOT**** contain private material (`d`). |
+| `reply` | `object` | Yes | Reply descriptor: `{ "mode": "direct_post", "callbackUrl": "<url>" }` or `{ "mode": "post_message" }`. |
+
+#### Client Metadata {#client-metadata}
+
+`clientMetadata` carries optional, **self-reported** display hints:
+`origin`, `userAgent`, `platform`, `language`, `languages` (string array), and
+`timezone` (IANA name). This data is unauthenticated; Providers ****MUST NOT****
+present it as verified application identity. On the popup channel, Providers
+****SHOULD**** replace the claimed `origin` with the transport-authenticated
+dapp origin before recording it in session metadata.
+
+#### Permission Requests {#permission-requests}
+
+Each element of `permissionRequests` is:
+
+| Field | Type | Description |
+|---|---|---|
+| `protocolDefinition` | `object` | The full DWN protocol definition. The Provider prepares this protocol on the user's DWN if not already present. |
+| `permissionScopes` | `array` | DWN permission scope objects describing the requested operations. Every scope's `protocol` ****MUST**** equal `protocolDefinition.protocol`. |
+
+::: example Connect Request
+```json
+{
+  "clientDid": "did:jwk:eyJr...",
+  "appName": "My Application",
+  "clientMetadata": { "origin": "https://myapp.example.com" },
+  "permissionRequests": [
+    {
+      "protocolDefinition": {
+        "protocol": "https://social.example/protocol",
+        "published": true,
+        "types": {
+          "post": { "schema": "https://social.example/post", "dataFormats": ["application/json"] }
+        },
+        "structure": {
+          "post": { "$actions": [ { "who": "anyone", "can": ["create", "read"] } ] }
+        }
+      },
+      "permissionScopes": [
+        { "interface": "Protocols", "method": "Query", "protocol": "https://social.example/protocol" },
+        { "interface": "Messages",  "method": "Read",  "protocol": "https://social.example/protocol" },
+        { "interface": "Records",   "method": "Read",  "protocol": "https://social.example/protocol" },
+        { "interface": "Records",   "method": "Write", "protocol": "https://social.example/protocol" }
+      ]
+    }
+  ],
+  "requestedSessionTtlSeconds": 86400,
+  "supportedDidMethods": ["did:dht", "did:jwk"],
+  "nonce": "kJ83...base64url",
+  "state": "Qm5f...base64url",
+  "responseKey": { "kty": "OKP", "crv": "X25519", "x": "..." },
+  "reply": { "mode": "direct_post", "callbackUrl": "https://connect.example.com/connect/callback" }
+}
+```
+:::
+
+### Client Requirements {#client-requirements}
+
+For every handshake the Client ****MUST****:
+
+- Generate a **new** ephemeral `did:jwk` (`clientDid`) — never reused across
+  handshakes.
+- Generate a **new** X25519 key pair for the [[ref:Response Key]] — never reused
+  across handshakes. Only the minimal public JWK (`kty`, `crv`, `x`)
+  ****SHOULD**** be placed in the request.
+- Generate fresh random `nonce` and `state` values.
+- Embed the reply descriptor supplied by the channel (Clients do not invent
+  reply descriptors; the channel owns delivery).
+
+
+## Connect Response {#connect-response}
+
+The Connect Response is the JWT payload of the sealed response envelope.
+
+### Schema {#response-schema}
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `providerDid` | `string` | Yes | The user's selected DID (the Provider's real identity) that authorized the delegation. |
+| `delegateDid` | `string` | Yes | The [[ref:Delegate DID]] that received the grants. |
+| `aud` | `string` | Yes | ****MUST**** equal the request's `clientDid`. |
+| `iat` | `number` | Yes | Issued-at (Unix seconds). |
+| `exp` | `number` | Yes | Expiry (Unix seconds). ****MUST**** be `iat + 600`. |
+| `nonce` | `string` | Yes | Echo of the request `nonce`. |
+| `state` | `string` | Yes | Echo of the request `state`. |
+| `delegateGrants` | `array` | Yes | Full DWN `RecordsWrite` messages (with `encodedData`) for every session grant, followed by the [[ref:Session Revocation Grants]]. |
+| `delegatePortableDid` | `object` | Conditional | The delegate's portable form — `uri`, `document`, `privateKeys`. ****MUST**** be present for wallet-minted delegate sessions and ****MUST**** be absent when the request supplied `delegateDid`. |
+| `sessionRevocations` | `array` | Yes | Array of `{ "grantId": string, "revocationGrantId": string }` mappings (****MAY**** be empty). |
+
+### Provider Sealing Rules {#provider-sealing-rules}
+
+When sealing an approved response, the Provider ****MUST****:
+
+- Reject an approval whose `delegateDid` differs from a request-supplied
+  `delegateDid`.
+- Reject an approval that returns delegate private key material when the request
+  supplied its own `delegateDid`.
+- Reject an approval missing `delegatePortableDid` for a wallet-minted session.
+- Stamp `aud` from the request `clientDid`, echo `nonce` and `state` verbatim,
+  and set `exp = iat + 600`.
+- Seal to the request's `responseKey` per the
+  [response JWE profile](#response-jwe-profile), passing the [[ref:PIN]] on
+  relay channels.
+
+### Response Value Checks {#response-value-checks}
+
+After decryption, JWT verification, and shape validation, the Client
+****MUST**** reject the response unless ALL of the following hold:
+
+1. `aud` equals the Client's `clientDid` for this handshake.
+2. `nonce` exactly echoes the request `nonce`.
+3. `state` exactly echoes the request `state` (in addition to the JWE `apu`
+   header check).
+4. `exp > iat`.
+5. `iat ≤ now + 60` (60-second clock-skew allowance).
+6. `now < exp`.
+
+Additionally, if the Client supplied a `delegateDid` in the request, it
+****MUST**** verify the response's `delegateDid` equals it; if the Client did
+not supply one, it ****MUST**** require `delegatePortableDid` to be present.
+
+### Deny Token {#deny-token}
+
+When the user rejects the request, the Provider ****MUST**** deliver the literal
+string `DENIED` through the normal response path (the callback POST on the relay
+channel; the response `postMessage` on the popup channel) in place of a sealed
+JWE. Clients ****MUST**** treat it as a terminal user denial, not an error.
+
+
+## Relay Channel {#relay-channel}
+
+The relay channel carries the handshake through an untrusted
+[[ref:Connect Server]] using four HTTP routes, in the style of OAuth 2.0 Pushed
+Authorization Requests ([[spec:RFC9126]]). It is used for QR-code, deep-link,
+and CLI flows. Relay responses ****MUST**** be PIN-strengthened.
+
+### Endpoints {#connect-server-endpoints}
+
+All paths are relative to the Connect Server's connect base URL
+(e.g. `https://dwn.example/connect`).
+
+#### Pushed Authorization Request {#endpoint-par}
 
 ```
 POST /connect/par
 ```
 
-Stores an encrypted auth request blob from the [[ref:Client]].
-
-**Request:**
-
-- `Content-Type`: `application/json`
-- Body:
+**Request:** `Content-Type: application/json`
 
 ```json
-{
-  "request": "<JWE compact serialization>"
-}
+{ "request": "<sealed request JWE, compact serialization>" }
 ```
 
-The `request` field ****MUST**** contain the encrypted auth request as a JWE
-compact serialization string (see [Auth Request Encryption](#auth-request-encryption)).
-
-The request object ****MUST NOT**** contain a `request_uri` field.
-
-**Response:**
-
-- Status: `201 Created`
-- Body:
+**Response:** `201 Created`
 
 ```json
 {
@@ -219,101 +581,66 @@ The request object ****MUST NOT**** contain a `request_uri` field.
 
 | Field | Type | Description |
 |---|---|---|
-| `request_uri` | `string` | URL where the Provider can fetch the auth request |
+| `request_uri` | `string` | Single-use URL where the Provider fetches the sealed request |
 | `expires_in` | `number` | TTL in seconds before the stored request expires |
 
-The server ****MUST**** generate a unique, unguessable identifier for the request
-and construct the `request_uri` as `{baseUrl}/connect/authorize/{id}.jwt`.
+The server ****MUST**** generate a unique, unguessable identifier and construct
+the `request_uri` as `{baseUrl}/connect/authorize/{id}.jwt`.
 
-**Errors:**
-- `400 Bad Request` if the body is missing, malformed, or contains a `request_uri`.
+**Errors:** `400 Bad Request` if the body is missing or malformed.
 
-### Authorization Request Retrieval {#endpoint-authorize}
+#### Authorization Request Retrieval {#endpoint-authorize}
 
 ```
-GET /connect/authorize/:id.jwt
+GET /connect/authorize/{id}.jwt
 ```
 
-Retrieves a stored encrypted auth request. Used by the [[ref:Provider]].
-
-**Response:**
-- Status: `200 OK`
-- `Content-Type`: `application/jwt`
-- Body: The JWE compact serialization string (the raw encrypted blob).
+**Response:** `200 OK`, body: the sealed request JWE (compact serialization).
 
 The server ****MUST**** delete the stored request after successful retrieval
-(one-time use).
+(single-use). **Errors:** `404 Not Found` if the ID does not exist, was already
+retrieved, or has expired.
 
-**Errors:**
-- `404 Not Found` if the request ID does not exist or has expired.
-
-### Callback {#endpoint-callback}
+#### Callback {#endpoint-callback}
 
 ```
 POST /connect/callback
 ```
 
-Stores an encrypted auth response from the [[ref:Provider]].
-
-**Request:**
-
-- `Content-Type`: `application/json`
-- Body:
-
-```json
-{
-  "id_token": "<JWE compact serialization>",
-  "state": "<state value from auth request>"
-}
-```
-
-| Field | Type | Description |
-|---|---|---|
-| `id_token` | `string` | The encrypted auth response as a JWE compact serialization |
-| `state` | `string` | The `state` value from the original auth request, used to correlate the response |
-
-**Response:**
-- Status: `201 Created`
-
-**Errors:**
-- `400 Bad Request` if required fields are missing.
-
-### Token Retrieval {#endpoint-token}
+**Request:** `Content-Type: application/x-www-form-urlencoded`
 
 ```
-GET /connect/token/:state.jwt
+id_token=<sealed response JWE or DENIED>&state=<request state>
 ```
 
-Retrieves a stored encrypted auth response. Used by the [[ref:Client]].
+| Field | Description |
+|---|---|
+| `id_token` | The sealed response JWE, or the literal [[ref:Deny Token]] |
+| `state` | The `state` value from the request, correlating the response |
 
-The `:state` path parameter ****MUST**** match the `state` value from the original
-auth request.
+**Response:** `201 Created`. **Errors:** `400 Bad Request` if fields are missing.
 
-**Response:**
-- Status: `200 OK`
-- `Content-Type`: `application/jwt`
-- Body: The JWE compact serialization string (the encrypted auth response).
+#### Token Retrieval {#endpoint-token}
+
+```
+GET /connect/token/{state}.jwt
+```
+
+**Response:** `200 OK`, body: the stored `id_token` verbatim (sealed response
+JWE or the [[ref:Deny Token]]).
 
 The server ****MUST**** delete the stored response after successful retrieval
-(one-time use).
+(single-use). **Errors:** `404 Not Found` while no response has been submitted,
+or after expiry.
 
-**Errors:**
-- `404 Not Found` if no response has been submitted for this state, or if it has
-  expired.
+The Client ****SHOULD**** poll this endpoint (****RECOMMENDED**** every
+3 seconds, with a ****RECOMMENDED**** total budget of 5 minutes and a
+30-second per-request timeout).
 
-The [[ref:Client]] ****SHOULD**** poll this endpoint at a regular interval
-(****RECOMMENDED**** every 3 seconds) until a response is available or a timeout
-is reached (****RECOMMENDED**** 5-minute timeout).
+#### Server Requirements {#endpoint-discovery}
 
-### Endpoint Discovery {#endpoint-discovery}
-
-The Connect Server URL is provided by the [[ref:Client]] application at connection
-time and included in the [[ref:Wallet URI]]. The Connect Server is independent of
-any specific DWN Server — it ****MAY**** be co-located with a DWN Server or operated
-as a standalone service.
-
-Connect Servers ****MUST**** support HTTPS. Connect Servers ****MUST**** include
-CORS headers allowing cross-origin requests from browser-based Clients:
+Connect Servers ****MUST**** support HTTPS and ****MUST**** include CORS headers
+allowing cross-origin requests from browser Clients:
 
 | Header | Value |
 |---|---|
@@ -321,767 +648,394 @@ CORS headers allowing cross-origin requests from browser-based Clients:
 | `Access-Control-Allow-Methods` | `GET, POST, OPTIONS` |
 | `Access-Control-Allow-Headers` | `*` |
 
+Stored blobs ****MUST**** expire (****RECOMMENDED**** 10 minutes).
 
-## Auth Request {#auth-request}
+### Wallet URI Format {#wallet-uri-format}
 
-The auth request is a signed JWT encrypted in a JWE, containing the application's
-identity, requested permissions, and protocol definitions.
+The [[ref:Wallet URI]] bootstraps the relay flow by carrying the request pointer
+and the single-use encryption key to the Provider — in the URI **fragment**:
 
-### SIOPv2 Auth Request Object {#siop-auth-request}
-
-The auth request payload extends the SIOPv2 Authentication Request with Web5-specific
-fields. The base SIOPv2 fields are:
-
-| Field | Type | Required | Description |
-|---|---|---|---|
-| `client_id` | `string` | Yes | DID of the Client's ephemeral DID (e.g., `did:jwk:...`) |
-| `scope` | `string` | Yes | ****MUST**** be `"openid did:jwk"` |
-| `response_type` | `string` | Yes | ****MUST**** be `"id_token"` |
-| `redirect_uri` | `string` | Yes | The callback endpoint URL (`{connectServerUrl}/connect/callback`) |
-| `response_mode` | `string` | Yes | ****MUST**** be `"direct_post"` |
-| `state` | `string` | Yes | Random 16-byte base64url-encoded anti-CSRF token |
-| `nonce` | `string` | Yes | Random 16-byte base64url-encoded anti-replay token |
-| `client_metadata` | `object` | No | Client metadata (see below) |
-
-#### Client Metadata
-
-```json
-{
-  "client_metadata": {
-    "subject_syntax_types_supported": ["did:dht", "did:jwk"],
-    "client_name": "My Application",
-    "client_uri": "https://myapp.example.com",
-    "logo_uri": "https://myapp.example.com/logo.png"
-  }
-}
+```
+{walletUri}#request_uri={encodedRequestUri}&encryption_key={base64urlKey}
 ```
 
-The `subject_syntax_types_supported` array indicates which DID methods the Client
-can work with. The Provider ****SHOULD**** select a DID method supported by the Client.
-
-### Web5 Connect Extensions {#web5-extensions}
-
-The auth request includes additional fields beyond SIOPv2:
-
-| Field | Type | Required | Description |
-|---|---|---|---|
-| `displayName` | `string` | Yes | Human-readable application name, displayed to the user in the Provider's consent UI |
-| `permissionRequests` | `array` | Yes | Array of permission request objects |
-
-#### Permission Requests {#permission-requests}
-
-Each element of `permissionRequests` is an object with:
-
-| Field | Type | Description |
+| Fragment parameter | Encoding | Description |
 |---|---|---|
-| `protocolDefinition` | `object` | The full DWN protocol definition object. The Provider installs this protocol on the user's DWN if not already present. |
-| `permissionScopes` | `array` | Array of DWN permission scope objects describing the specific operations requested |
+| `request_uri` | URL-encoded | The `request_uri` returned by the [PAR endpoint](#endpoint-par) |
+| `encryption_key` | base64url | The single-use **32-byte** symmetric request key |
 
-::: example Auth Request Permission Requests
-```json
-{
-  "permissionRequests": [
-    {
-      "protocolDefinition": {
-        "protocol": "https://social.example/protocol",
-        "published": true,
-        "types": {
-          "post": { "schema": "https://social.example/post", "dataFormats": ["application/json"] },
-          "comment": { "schema": "https://social.example/comment", "dataFormats": ["application/json"] }
-        },
-        "structure": {
-          "post": {
-            "$actions": [
-              { "who": "anyone", "can": ["create", "read"] }
-            ],
-            "comment": {
-              "$actions": [
-                { "who": "anyone", "can": ["create", "read"] }
-              ]
-            }
-          }
-        }
-      },
-      "permissionScopes": [
-        { "interface": "Records", "method": "Write", "protocol": "https://social.example/protocol" },
-        { "interface": "Records", "method": "Read", "protocol": "https://social.example/protocol" },
-        { "interface": "Records", "method": "Query", "protocol": "https://social.example/protocol" },
-        { "interface": "Records", "method": "Subscribe", "protocol": "https://social.example/protocol" },
-        { "interface": "Records", "method": "Delete", "protocol": "https://social.example/protocol" },
-        { "interface": "Protocols", "method": "Query", "protocol": "https://social.example/protocol" },
-        { "interface": "Messages", "method": "Read", "protocol": "https://social.example/protocol" },
-        { "interface": "Messages", "method": "Sync", "protocol": "https://social.example/protocol" },
-        { "interface": "Messages", "method": "Subscribe", "protocol": "https://social.example/protocol" }
-      ]
-    }
-  ]
-}
+Both parameters ****MUST**** be carried fragment-only. The fragment never leaves
+the local channel (terminal → camera, or entirely within the opening browser)
+and is never sent to the wallet's web server, so the key cannot surface in
+server or CDN logs on the deep-link path. Providers ****MUST**** ignore connect
+parameters found in the query string, and ****MUST**** reject an
+`encryption_key` that does not decode to exactly 32 bytes.
+
+::: example Wallet URI
+```
+https://wallet.example.com/connect/app#request_uri=https%3A%2F%2Fconnect.example.com%2Fconnect%2Fauthorize%2Fabc123.jwt&encryption_key=8fPq...43chars...Xw
 ```
 :::
 
-#### Baseline Scopes {#baseline-scopes}
+Cross-device flows ****SHOULD**** present the Wallet URI as a QR code
+(****RECOMMENDED**** error correction level M). Same-device flows ****MAY****
+use it as a deep link; `walletUri` ****MAY**** use a custom scheme
+(e.g. `enbox://connect`) or an HTTPS URL handled via universal/app links.
+Providers ****SHOULD**** scrub the fragment from the address bar/history before
+processing (e.g. `history.replaceState`).
 
-To enable sync and basic protocol interaction, the following scopes ****SHOULD****
-be included as baseline for every protocol permission request, regardless of the
-application's specific needs:
+### PIN Flow {#pin-flow}
 
-| Scope | Purpose |
-|---|---|
-| `Protocols` / `Query` (scoped to protocol) | Verify protocol availability |
-| `Messages` / `Read` (scoped to protocol) | Read messages during sync |
-| `Messages` / `Sync` (scoped to protocol) | Compare tree state during sync |
-| `Messages` / `Subscribe` (scoped to protocol) | Receive real-time sync events |
+1. During consent, the Provider generates and **displays** a PIN
+   (****RECOMMENDED**** at least 4 digits; any non-empty string is permitted by
+   the envelope layer).
+2. The Provider seals the response with the PIN folded into the CEK derivation
+   (see [CEK derivation](#cek-derivation)).
+3. The user communicates the PIN to the Client out-of-band.
+4. The Client collects the PIN **after** the response ciphertext arrives, then
+   opens the envelope. A wrong PIN produces an AEAD authentication failure; the
+   Client ****SHOULD**** let the user retry entry.
 
-::: note
-A future revision may simplify the three Messages scopes (`Read`, `Sync`,
-`Subscribe`) into a single unified `Messages` / `Read` scope, aligning with how
-protocol `$actions` already treats `read` as a single action covering read, query,
-subscribe, and count operations. Client and Provider implementations ****SHOULD****
-be prepared for this simplification.
-:::
 
-### Auth Request Signing {#auth-request-signing}
+## Popup Channel {#popup-channel}
 
-The auth request ****MUST**** be signed as a JWT using the Client's ephemeral DID:
+The popup channel carries the handshake directly between a browser dapp and a
+wallet popup over `window.postMessage`. There is no intermediary and no PIN;
+channel security rests on browser origin pinning plus the sealed envelopes.
 
-**JWT Header:**
-```json
-{
-  "alg": "EdDSA",
-  "kid": "did:jwk:<client-ephemeral-did>#0",
-  "typ": "JWT"
-}
-```
+### Page and Message Types {#popup-messages}
 
-**JWT Payload:** The complete auth request object (SIOPv2 fields + Web5 extensions).
+The dapp opens `{walletUrl}/dweb-connect` as a popup. Exactly three message
+kinds cross the channel:
 
-**Signature:** Ed25519 EdDSA, signed with the Client's ephemeral DID's signing key.
-
-The Client ****MUST**** generate a new ephemeral `did:jwk` (Ed25519) for each
-connect session. This DID is used for:
-1. Signing the auth request JWT.
-2. ECDH key agreement to derive the auth response decryption key.
-
-### Auth Request Encryption {#auth-request-encryption}
-
-The signed JWT ****MUST**** be encrypted as a JWE compact serialization using
-XChaCha20-Poly1305 with a random symmetric key:
-
-**JWE Protected Header:**
-```json
-{
-  "alg": "dir",
-  "cty": "JWT",
-  "enc": "XC20P",
-  "typ": "JWT"
-}
-```
-
-| Field | Value | Description |
+| Message `type` | Direction | Payload fields |
 |---|---|---|
-| `alg` | `"dir"` | Direct key agreement — the encryption key is used directly, not wrapped |
-| `cty` | `"JWT"` | The content type is a JWT |
-| `enc` | `"XC20P"` | XChaCha20-Poly1305 content encryption |
-| `typ` | `"JWT"` | The overall token type |
+| `enbox-connect-loaded` | wallet → dapp | `walletEpk` (X25519 public JWK), `walletOrigin` (string) |
+| `enbox-connect-request` | dapp → wallet | `jwe` (sealed request, compact serialization) |
+| `enbox-connect-response` | wallet → dapp | `payload` (sealed response JWE, or the [[ref:Deny Token]]) |
 
-**Encryption parameters:**
-- **Key:** 32 random bytes generated by the Client.
-- **Nonce:** 24 random bytes (XChaCha20 uses a 192-bit nonce).
-- **AAD (Additional Authenticated Data):** The base64url-encoded protected header.
-- **Auth tag:** 16 bytes, produced by the Poly1305 MAC.
+### Handshake {#popup-handshake}
 
-**JWE Compact Serialization:**
-```
-base64url(protectedHeader) . "" . base64url(nonce) . base64url(ciphertext) . base64url(authTag)
-```
+1. **Open:** the dapp opens the wallet popup. The `window.open` call
+   ****SHOULD**** be issued synchronously within the user-gesture call stack
+   (before any awaited key generation) so strict popup blockers do not reject it.
+2. **Beacon:** once loaded, the wallet generates a fresh ephemeral X25519 key
+   pair and posts the `loaded` beacon to its opener with `targetOrigin` pinned
+   to the dapp origin. `walletEpk` ****MUST**** be a public-only JWK
+   (`kty: "OKP"`, `crv: "X25519"`, an `x` value, and no `d`).
+3. **Request:** the dapp verifies the beacon (see
+   [origin pinning](#popup-origin-pinning)), seals the request to `walletEpk`
+   per the [request JWE profile](#request-jwe-profile) with
+   `apv = base64url(UTF8(walletOrigin))` and
+   `reply: { "mode": "post_message" }`, and posts it to the popup.
+4. **Open + consent:** the wallet opens the envelope (which value-checks `apv`
+   against its **own** origin), rejects requests whose `reply.mode` is not
+   `post_message`, runs consent and the approval ceremony.
+5. **Response:** the wallet posts the sealed response JWE — or the
+   [[ref:Deny Token]] — back to the opener, `targetOrigin` pinned. The dapp
+   opens it per the [response JWE profile](#response-jwe-profile) (no PIN).
 
-The second segment (encrypted key) is empty because `alg: "dir"` uses the key
-directly.
+### Origin and Source Pinning {#popup-origin-pinning}
 
-### Encryption Key Distribution {#encryption-key-distribution}
+Both sides ****MUST**** apply all of the following to every message:
 
-The 32-byte symmetric encryption key is distributed to the [[ref:Provider]] via
-the [[ref:Wallet URI]] (see [Wallet URI Format](#wallet-uri-format)). This key is
-shared out-of-band (via QR code or deep link), not through the Connect Server.
+- **Outbound:** `postMessage` `targetOrigin` is always the pinned counterparty
+  origin — never `"*"`.
+- **Inbound:** drop any message whose `event.origin` is not the pinned
+  counterparty origin, or whose `event.source` is not the expected window
+  object (the popup window on the dapp side; the opener on the wallet side).
+- **Dapp side:** the pinned wallet origin derives from the configured wallet
+  URL. The beacon's `walletOrigin` field ****MUST**** equal the pinned origin,
+  and a malformed beacon from the genuine popup ****MUST**** fail the handshake
+  closed.
+- **Wallet side:** the dapp origin is taken from an explicit configuration or
+  derived from `document.referrer`; if neither is available the wallet
+  ****MUST**** refuse to start (never falling back to `"*"`). The wallet
+  ****SHOULD**** additionally apply an origin policy (e.g. HTTPS-only, with a
+  local-development allowance) before conversing.
+- The cryptographic backstop: the `apv` origin binding in the sealed request is
+  integrity-protected, so even a message that slipped past `postMessage`
+  filtering cannot be opened by a wallet at a different origin.
+
+### Popup Lifecycle {#popup-lifecycle}
+
+- The wallet ****MUST**** accept at most one request per popup session.
+- If the user closes the popup **before** the beacon arrives, the dapp
+  ****SHOULD**** treat the handshake as a denial.
+- If the user closes the popup **after** the handshake is established without
+  responding, the dapp ****MUST**** treat it as a denial.
+- Both sides ****SHOULD**** apply an overall handshake timeout
+  (****RECOMMENDED**** 5 minutes).
 
 
 ## Provider Processing {#provider-processing}
 
-This section describes how the [[ref:Provider]] processes an incoming connect request.
+### Request Intake {#request-intake}
 
-### Request Retrieval and Decryption {#request-retrieval}
+Relay channel: extract `request_uri` and `encryption_key` from the
+[[ref:Wallet URI]] fragment, fetch the sealed request
+(`GET {request_uri}`, single-use), and open it with the `dir` profile. Popup
+channel: receive the sealed request over `postMessage` and open it with the
+`ECDH-ES` profile. All [opening rules](#request-jwe-profile) apply on both
+channels.
 
-1. The Provider extracts the `request_uri` and `encryption_key` from the
-   [[ref:Wallet URI]].
-2. The Provider fetches the encrypted auth request:
-   ```
-   GET {request_uri}
-   ```
-3. The Provider decrypts the JWE using the `encryption_key`:
-   - Decode the `encryption_key` from base64url to 32 raw bytes.
-   - Split the JWE compact serialization into its 5 components.
-   - Decrypt using XChaCha20-Poly1305 with the protected header as AAD.
-   - The result is the signed JWT string.
+Providers ****SHOULD**** additionally apply transport policy before fetching or
+processing: HTTPS-only request/callback URLs (with local-development
+allowances), bounded response sizes, and no redirect following.
 
-### JWT Verification {#jwt-verification}
+### Request Validation {#request-validation}
 
-1. Parse the JWT header to extract the `kid` field.
-2. Resolve the Client's ephemeral DID from the `kid` (the DID portion before `#`).
-3. Find the matching public key in the resolved DID document's `verificationMethod`.
-4. Verify the Ed25519 EdDSA signature.
-5. The verified payload is the `Web5ConnectAuthRequest` object.
+Beyond the envelope-layer checks, Providers ****MUST**** validate before
+presenting consent:
 
-The Provider ****MUST**** reject the request if:
-- The DID cannot be resolved.
-- The `kid` does not match any verification method.
-- The signature is invalid.
+- Every permission scope's `protocol` equals its request's
+  `protocolDefinition.protocol`.
+- The [prohibited scopes](#scope-constraints) are absent.
+- `requestedSessionTtlSeconds`, when present, is a finite number ≥ 1 (after
+  flooring).
+- `delegateDid`, when present, is a canonical DID URI.
+
+Providers ****SHOULD**** also validate protocol definitions through their DWN
+implementation's validators before consent, and ****MAY**** enforce stricter
+local policy (canonical-definition pinning, scope allow-lists, rejection of
+requester-supplied encryption metadata).
 
 ### User Consent {#user-consent}
 
-The Provider ****MUST**** present the auth request to the user for approval:
+The Provider ****MUST**** present the request to the user for approval:
 
-- Display the `displayName` of the requesting application.
-- Display the `client_metadata` if present (app name, URI, logo).
-- List the requested permissions in human-readable form.
-- Allow the user to select which of their DIDs to connect.
-- Display a randomly generated PIN (numeric, ****RECOMMENDED**** 4-6 digits)
-  that the user must communicate to the Client application out-of-band.
+- Display `appName` (and `appIcon` / `clientMetadata` hints, clearly marked as
+  self-reported; on the popup channel the transport-authenticated origin
+  ****SHOULD**** be displayed instead of the claimed one).
+- List the requested permissions in human-readable form, including the
+  requested session lifetime after clamping.
+- Let the user select which of their DIDs to connect, limited to methods in
+  `supportedDidMethods`.
+- On the relay channel, display the [[ref:PIN]].
 
 The Provider ****MUST NOT**** proceed without explicit user consent.
 
-### Delegate DID Creation {#delegate-did-creation}
-
-Upon user approval, the Provider creates a new [[ref:Delegate DID]]:
-
-1. Generate a new `did:jwk` with an Ed25519 key pair.
-2. Export the DID as a `PortableDid` object containing:
-   - `uri` — The DID URI string.
-   - `document` — The DID document.
-   - `privateKeys` — Array of private key JWK objects.
-
-The Delegate DID is disposable — it exists solely for this connection session.
-The Provider ****SHOULD**** create a new Delegate DID for each connect session.
-
-### Protocol Installation {#protocol-installation}
-
-For each `permissionRequest` in the auth request:
-
-1. Query the user's DWN for the protocol: `ProtocolsQuery` with
-   `filter.protocol` matching the `protocolDefinition.protocol`.
-2. **If the protocol is not installed:**
-   - Create a `ProtocolsConfigure` message with the provided `protocolDefinition`.
-   - Process the message on the user's remote DWN(s).
-   - Process the message on the user's local DWN.
-3. **If the protocol is already installed:**
-   - Send the existing `ProtocolsConfigure` message to the user's remote DWN(s)
-     to ensure it is available for the Client's sync operations.
+### Approval Ceremony {#approval-ceremony}
 
 ::: note
-Installing the protocol on the remote DWN before granting permissions ensures that
-when the Client begins syncing, the protocol definition is already present. Without
-this, the Client's sync would fail because protocol-scoped records cannot be
-processed without the protocol definition.
+This section is a normative description of *what* an approval produces; the
+internal orchestration is implementation-defined. In the reference
+implementation it is a single transport-agnostic operation
+(`executeConnectApproval` in `@enbox/agent`).
 :::
 
-### Permission Grant Creation {#permission-grant-creation}
+Upon approval, the Provider:
 
-For each permission scope in the auth request:
+1. **Delegate:** uses the request-supplied `delegateDid` when present;
+   otherwise mints a fresh `did:jwk` delegate (Ed25519), deriving and attaching
+   its X25519 key for encrypted-data access.
+2. **Session lifetime:** clamps `requestedSessionTtlSeconds` to policy — the
+   reference default is 24 hours when absent, with a 90-day maximum — and
+   records bounded session metadata (app name, client hints, and the channel:
+   `relay` or `postMessage`) on the grants.
+3. **Protocol preparation:** for each requested protocol, installs the supplied
+   definition on the user's DWN when absent (deriving `$keyAgreement` public
+   keys when any type sets `encryptionRequired: true`) and makes it available
+   on the user's remote DWN endpoints. Requested definitions that conflict with
+   an installed definition ****MUST**** fail the approval.
+4. **Grants:** creates a [[ref:Permission Grant]] per approved scope —
+   `delegated: true` for `Records` scopes, non-delegated for `Protocols.Query`
+   and `Messages.Read` — with `dateExpires` set from the clamped session
+   lifetime, and delivers every grant to the user's remote DWN endpoints. Each
+   grant ****MUST**** be accepted by at least one endpoint or the approval
+   fails.
+5. **Encrypted read access:** for `Records.Read` scopes on protocols with
+   encrypted types, creates durable grant-key records wrapping the relevant
+   protocol keys to the delegate's X25519 key, and delivers them alongside the
+   grants.
+6. **Session revocation grants:** creates one [[ref:Session Revocation Grant]]
+   per session grant (`Records.Write` on
+   `https://identity.foundation/dwn/permissions`, `contextId` = the session
+   grant's record ID) and returns the `grantId → revocationGrantId` mappings as
+   `sessionRevocations`.
 
-1. Determine whether the grant should be [[ref:Delegated Grant]] or a standard grant:
-   - **Delegated (`delegated: true`):** Used for `Records` interface scopes (all
-     methods) and `Protocols.Configure`. Delegated grants allow the Delegate DID
-     to act on behalf of the user's real DID.
-   - **Standard (`delegated: false`):** Used for `Messages` interface scopes
-     (`Read`, `Sync`, `Subscribe`) and `Protocols.Query`. These give the Delegate
-     DID direct permissions without delegation.
+The ceremony's output — delegate DID (plus portable form when minted), the
+combined grant list (session grants followed by revocation grants), and the
+revocation mappings — is sealed per the
+[Provider sealing rules](#provider-sealing-rules) and delivered through the
+channel's response path.
 
-2. Create a permission grant record:
-   ```json
-   {
-     "delegated": true,
-     "grantedTo": "<delegate-did-uri>",
-     "scope": {
-       "interface": "Records",
-       "method": "Write",
-       "protocol": "https://social.example/protocol"
-     },
-     "dateExpires": "2040-06-25T16:09:16.693356Z"
-   }
-   ```
-
-3. Process the grant on the user's local DWN (with `store: true`).
-4. Send the grant to the user's remote DWN(s) so the Client can sync it down.
-
-::: note
-Grant expiry is an area for future improvement. A fixed far-future expiry is used
-currently. Future revisions of this specification may define expiry negotiation
-between the Client and Provider, and a grant renewal protocol.
-:::
-
-#### Delegated vs. Standard Grants {#delegated-vs-standard}
-
-| Scope | Delegated | Rationale |
-|---|---|---|
-| `Records.Write` | Yes | Client creates records as the user |
-| `Records.Read` | Yes | Client reads records as the user |
-| `Records.Query` | Yes | Client queries records as the user |
-| `Records.Subscribe` | Yes | Client subscribes as the user |
-| `Records.Delete` | Yes | Client deletes records as the user |
-| `Records.Count` | Yes | Client counts records as the user |
-| `Protocols.Configure` | Yes | Client manages protocols as the user |
-| `Protocols.Query` | No | Direct permission is sufficient |
-| `Messages.Read` | No | Direct permission for sync |
-| `Messages.Sync` | No | Direct permission for sync |
-| `Messages.Subscribe` | No | Direct permission for sync |
-
-All permission scopes in a request ****MUST**** include a `protocol` matching
-the `protocolDefinition.protocol` of the corresponding permission request.
-The Provider ****MUST**** validate this constraint and reject scopes that
-reference a protocol not included in the request.
-
-
-## Auth Response {#auth-response}
-
-### SIOPv2 Auth Response Object {#siop-auth-response}
-
-The auth response payload extends the SIOPv2 Authentication Response:
-
-| Field | Type | Description |
-|---|---|---|
-| `iss` | `string` | The user's selected DID (the Provider's real identity) |
-| `sub` | `string` | The [[ref:Delegate DID]] URI |
-| `aud` | `string` | The Client's ephemeral DID (`client_id` from the auth request) |
-| `iat` | `number` | Issued-at timestamp (Unix epoch seconds) |
-| `exp` | `number` | Expiry timestamp (****MUST**** be `iat + 600`, i.e., 10 minutes) |
-| `nonce` | `string` | Echoed from the auth request |
-
-### Web5 Connect Extensions {#web5-response-extensions}
-
-| Field | Type | Description |
-|---|---|---|
-| `delegateGrants` | `array` | Array of DWN `RecordsWrite` messages representing the permission grants |
-| `delegatePortableDid` | `object` | The [[ref:Delegate DID]] as a `PortableDid` (including private keys) |
-
-#### Delegate Grants {#delegate-grants}
-
-Each element of `delegateGrants` is a full DWN `RecordsWrite` message with `encodedData`:
-
-```json
-{
-  "recordId": "bafyrei...",
-  "contextId": "bafyrei...",
-  "descriptor": {
-    "interface": "Records",
-    "method": "Write",
-    "protocol": "https://tbd.website/dwn/permissions",
-    "protocolPath": "grant",
-    "recipient": "<delegate-did-uri>",
-    "dataCid": "bafkrei...",
-    "dataSize": 156,
-    "dateCreated": "2024-08-02T06:36:37.675594Z",
-    "messageTimestamp": "2024-08-02T06:36:37.675594Z",
-    "dataFormat": "application/json"
-  },
-  "authorization": {
-    "signature": {
-      "payload": "...",
-      "signatures": [{ "protected": "...", "signature": "..." }]
-    }
-  },
-  "encodedData": "<base64url-encoded-grant-data>"
-}
-```
-
-The `encodedData` contains the base64url-encoded JSON grant payload including the
-scope, expiry, and delegation flag.
-
-#### Delegate Portable DID {#delegate-portable-did}
-
-```json
-{
-  "uri": "did:jwk:eyJr...",
-  "document": {
-    "id": "did:jwk:eyJr...",
-    "verificationMethod": [{
-      "id": "did:jwk:eyJr...#0",
-      "type": "JsonWebKey",
-      "controller": "did:jwk:eyJr...",
-      "publicKeyJwk": { "crv": "Ed25519", "kty": "OKP", "x": "..." }
-    }],
-    "authentication": ["did:jwk:eyJr...#0"],
-    "assertionMethod": ["did:jwk:eyJr...#0"]
-  },
-  "privateKeys": [{
-    "crv": "Ed25519",
-    "d": "...",
-    "kty": "OKP",
-    "x": "..."
-  }]
-}
-```
-
-### Auth Response Signing {#auth-response-signing}
-
-The auth response ****MUST**** be signed as a JWT using the [[ref:Delegate DID]]
-(not the Provider's real DID):
-
-**JWT Header:**
-```json
-{
-  "alg": "EdDSA",
-  "kid": "did:jwk:<delegate-did>#0",
-  "typ": "JWT"
-}
-```
-
-**JWT Payload:** The complete auth response object (SIOPv2 fields + Web5 extensions).
-
-**Signature:** Ed25519 EdDSA, signed with the Delegate DID's signing key.
-
-::: note
-Signing with the Delegate DID rather than the Provider's real DID preserves privacy —
-the Connect Server and any interceptor cannot correlate the response to the user's
-real identity by inspecting the JWT header.
-:::
-
-### Auth Response Encryption {#auth-response-encryption}
-
-The signed JWT ****MUST**** be encrypted as a JWE compact serialization using an
-ECDH-derived key and XChaCha20-Poly1305, with the [[ref:PIN]] as additional
-authenticated data.
-
-#### ECDH Key Agreement {#ecdh-key-agreement}
-
-1. Take the Delegate DID's Ed25519 private key.
-2. Take the Client's ephemeral Ed25519 public key (resolved from the `client_id` DID).
-3. Convert both keys from Ed25519 to X25519:
-   - Private key: `Ed25519.convertPrivateKeyToX25519(delegatePrivateKey)`
-   - Public key: `Ed25519.convertPublicKeyToX25519(clientPublicKey)`
-4. Compute the X25519 shared secret:
-   - `sharedSecret = X25519.sharedSecret(delegateX25519Private, clientX25519Public)`
-5. Derive the encryption key via HKDF-SHA256:
-   - `key = HKDF-SHA256(ikm: sharedSecret, salt: empty, info: empty, length: 32)`
-
-The resulting 32-byte key is the symmetric encryption key for the JWE.
-
-::: note
-This works because X25519 shared secret is commutative:
-`X25519(a, G*b) == X25519(b, G*a)`. The Client can derive the same key using its
-own private key and the Delegate DID's public key (extracted from the `kid` in the
-JWE header).
-:::
-
-#### PIN as AAD {#pin-as-aad}
-
-The [[ref:PIN]] is incorporated into the encryption as Additional Authenticated Data
-(AAD). The AAD is constructed by appending the PIN to the JWE protected header object:
-
-```json
-{
-  "alg": "dir",
-  "cty": "JWT",
-  "enc": "XC20P",
-  "typ": "JWT",
-  "kid": "did:jwk:<delegate-did>#0",
-  "pin": "9876"
-}
-```
-
-The `pin` field is included in the AAD computation but ****MUST NOT**** be included
-in the actual JWE protected header. The actual protected header is:
-
-```json
-{
-  "alg": "dir",
-  "cty": "JWT",
-  "enc": "XC20P",
-  "typ": "JWT",
-  "kid": "did:jwk:<delegate-did>#0"
-}
-```
-
-The `kid` field in the protected header carries the Delegate DID's key ID, enabling
-the Client to resolve the Delegate DID and perform the same ECDH derivation.
-
-The PIN ensures that even if an attacker intercepts the JWE and knows the Client's
-ephemeral DID (which is public), they cannot decrypt the response without the PIN.
-An incorrect PIN causes an AEAD authentication failure (the Poly1305 tag check fails).
-
-#### JWE Construction {#jwe-construction}
-
-- **Encryption:** XChaCha20-Poly1305 (`XC20P`).
-- **Nonce:** 24 random bytes.
-- **AAD:** Base64url encoding of the JSON object `{protectedHeader fields + "pin": "<pin>"}`.
-- **Compact serialization:** Same structure as the auth request JWE.
+The approval ceremony is **not idempotent** (it mints keys and writes grants).
+Providers ****MUST NOT**** automatically retry a failed ceremony and
+****SHOULD**** guard against double-submission from their consent UI.
 
 
 ## Client Processing {#client-processing}
 
-This section describes how the [[ref:Client]] receives and processes the auth response.
-
-### Polling for Response {#polling}
-
-After presenting the [[ref:Wallet URI]] to the user, the Client polls the
-[Token Retrieval](#endpoint-token) endpoint:
-
-```
-GET {connectServerUrl}/connect/token/{state}.jwt
-```
-
-- Poll interval: ****RECOMMENDED**** 3 seconds.
-- Timeout: ****RECOMMENDED**** 5 minutes.
-- The Client ****MUST**** stop polling on `200 OK` (response available) or after
-  the timeout expires.
-- A `404` response indicates the Provider has not yet submitted the response.
-
-### PIN Collection {#pin-collection}
-
-When a response is received, the Client ****MUST**** collect the PIN from the user.
-The PIN was displayed to the user by the [[ref:Provider]] during the consent step.
-The user communicates it to the Client out-of-band (e.g., types it into a form field).
-
-### Response Decryption {#response-decryption}
-
-1. Split the JWE compact serialization into its 5 components.
-2. Parse the protected header to extract the `kid` field.
-3. Extract the Delegate DID from the `kid` (the DID portion before `#`).
-4. Resolve the Delegate DID to obtain its public key.
-5. Derive the ECDH shared key:
-   - Convert the Client's ephemeral Ed25519 private key to X25519.
-   - Convert the Delegate DID's Ed25519 public key to X25519.
-   - Compute `sharedSecret = X25519(clientX25519Private, delegateX25519Public)`.
-   - Derive `key = HKDF-SHA256(ikm: sharedSecret, salt: empty, info: empty, length: 32)`.
-6. Construct the AAD by adding the user-entered PIN to the protected header object.
-7. Decrypt using XChaCha20-Poly1305 with the derived key and AAD.
-8. If decryption fails (authentication tag mismatch), the PIN is incorrect. The
-   Client ****SHOULD**** prompt the user to re-enter the PIN.
-
-### JWT Verification {#response-jwt-verification}
-
-After decryption, verify the JWT:
-
-1. Extract the `kid` from the JWT header.
-2. Resolve the Delegate DID.
-3. Verify the Ed25519 EdDSA signature against the Delegate DID's public key.
-4. Validate the `aud` field matches the Client's ephemeral DID (`client_id`).
-5. Validate the `nonce` field matches the nonce from the original auth request.
-6. Validate the `exp` field has not passed.
-
-### Grant and DID Import {#grant-import}
-
-After successful verification:
-
-1. Extract `connectedDid` from the `iss` field — this is the user's real DID.
-2. Extract `delegatePortableDid` — import the Delegate DID and its private keys
-   into the Client's local key store.
-3. Extract `delegateGrants` — import each permission grant record into the Client's
-   local DWN.
-4. The Client is now connected and can use the Delegate DID with the permission
-   grants to interact with the user's DWN.
-
-
-## Wallet URI Format {#wallet-uri-format}
-
-The [[ref:Wallet URI]] is a URL constructed by the [[ref:Client]] that bootstraps
-the connect flow by directing the [[ref:Provider]] to fetch the encrypted auth request.
-
-### URI Structure {#uri-structure}
-
-```
-{walletBaseUri}?request_uri={encodedRequestUri}&encryption_key={encodedKey}
-```
-
-| Parameter | Encoding | Description |
-|---|---|---|
-| `request_uri` | URL-encoded | The `request_uri` returned by the [PAR endpoint](#endpoint-par) |
-| `encryption_key` | Base64url | The 32-byte symmetric encryption key for the auth request |
-
-::: example Wallet URI
-```
-https://wallet.example.com/?request_uri=https%3A%2F%2Fconnect.example.com%2Fconnect%2Fauthorize%2Fabc123.jwt&encryption_key=dGhpcyBpcyBhIHRlc3Qga2V5IGZvciBleGFtcGxl
-```
-:::
-
-### QR Code Encoding {#qr-code}
-
-When the connection is initiated cross-device (e.g., desktop browser to mobile wallet),
-the Client ****SHOULD**** encode the Wallet URI as a QR code for scanning.
-
-The QR code ****SHOULD**** use error correction level M (medium, 15% recovery).
-
-### Deep Link Handling {#deep-link}
-
-When the connection is initiated on the same device, the Client ****MAY**** use the
-Wallet URI as a deep link to launch the Provider application directly.
-
-The `walletBaseUri` ****MAY**** use a custom URI scheme (e.g., `web5://`) or an
-HTTPS URL that the Provider application handles via universal links or app links.
+1. Build the request per [Client requirements](#client-requirements) and the
+   channel's profile; sign and seal; deliver via the channel.
+2. Await the response ciphertext (poll the token route on the relay channel;
+   await the response message on the popup channel).
+3. If the ciphertext is the [[ref:Deny Token]], the flow ends as a user denial.
+4. On PIN channels, collect the PIN from the user.
+5. Open the response per the [response JWE profile](#response-jwe-profile),
+   including all [value checks](#response-value-checks).
+6. Import the delegate: the locally supplied delegate (verifying the response
+   granted to exactly it) or the response's `delegatePortableDid` (storing its
+   private keys in an encrypted vault).
+7. Import `delegateGrants` into the Client's local DWN and retain
+   `sessionRevocations` for disconnect-time self-revocation.
 
 
 ## Permission Model {#permission-model}
 
-### Mapping User Permissions to DWN Scopes {#permission-mapping}
+### Scope Constraints {#scope-constraints}
 
-Applications typically request permissions using high-level terms. The following
-mapping defines how these translate to DWN permission scopes:
+Providers ****MUST**** reject requests containing:
 
-| User Permission | DWN Scopes Generated |
+| Prohibited scope | Reason |
 |---|---|
-| `write` | `Records.Write` scoped to protocol |
-| `read` | `Records.Read` scoped to protocol |
-| `delete` | `Records.Delete` scoped to protocol |
-| `query` | `Records.Query` scoped to protocol |
-| `subscribe` | `Records.Subscribe` scoped to protocol |
-| `configure` | `Protocols.Configure` scoped to protocol |
+| `Records.Query`, `Records.Subscribe`, `Records.Count` | A delegated `Records.Read` grant already covers read, query, subscribe, and count — mirroring how protocol `$actions` treat `read`. Request `Records.Read` instead. |
+| `Protocols.Configure` | Protocol configuration is wallet-owned. The Provider configures protocols during approval; Clients never hold configure authority. |
 
-In addition to the user-requested permissions, the [Baseline Scopes](#baseline-scopes)
-are always included.
+### Baseline Scopes {#baseline-scopes}
 
-### Required Baseline Scopes {#required-baselines}
+For each protocol, Clients ****SHOULD**** request the following baseline
+alongside their data scopes:
 
-Every protocol permission request ****MUST**** include the following baseline scopes
-to ensure the Client can sync and interact with the protocol:
+| Scope | Delegated | Purpose |
+|---|---|---|
+| `Protocols.Query` (scoped to protocol) | No | Verify protocol availability |
+| `Messages.Read` (scoped to protocol) | No | Unified scope for protocol message feeds, sync, and real-time subscriptions |
 
-1. `Protocols.Query` — To verify the protocol is installed.
-2. `Messages.Read` — To read messages during sync.
-3. `Messages.Sync` — To perform set reconciliation during sync.
-4. `Messages.Subscribe` — To receive real-time sync events.
+High-level permissions map to scopes as:
 
-Without these scopes, the Client cannot synchronize the protocol's data between its
-local DWN and the user's remote DWN.
+| User permission | DWN scope | Delegated |
+|---|---|---|
+| `read` | `Records.Read` scoped to protocol | Yes |
+| `write` | `Records.Write` scoped to protocol | Yes |
+| `delete` | `Records.Delete` scoped to protocol | Yes |
 
-### Grant Expiry {#grant-expiry}
+### Session Lifetime {#session-lifetime}
 
-Permission grants ****MUST**** include a `dateExpires` field. Providers ****SHOULD****
-set a reasonable expiry based on the application's needs and the sensitivity of the
-data.
+Grants carry `dateExpires` derived from the clamped session lifetime. Clients
+****MAY**** request a lifetime via `requestedSessionTtlSeconds`; Providers
+clamp it to policy and ****MUST**** reflect the effective lifetime in the
+consent UI. Expired sessions require a new connect flow.
 
-::: note
-This specification does not currently define a grant renewal protocol. Applications
-with expired grants must initiate a new connect flow. Future revisions may define
-a renewal mechanism.
-:::
+### Revocation {#grant-revocation}
 
-### Grant Revocation {#grant-revocation}
+- The **user** may revoke any session grant at any time by writing the grant's
+  revocation record in the permissions protocol.
+- The **application** may revoke its own session on disconnect using the
+  [[ref:Session Revocation Grants]] delivered with the response: each mapping
+  in `sessionRevocations` identifies the revocation grant that authorizes
+  writing the revocation record for one session grant — and nothing else.
 
-The user ****MAY**** revoke permission grants at any time by creating a
-`grant/revocation` record in the permissions protocol (as defined in the DWN specification).
-
-When a grant is revoked, subsequent messages from the [[ref:Client]] using that
-grant will be rejected by the DWN with status `401`.
-
-Clients ****SHOULD**** handle `401` responses gracefully and inform the user that
-their permissions have been revoked.
+After revocation, DWN messages using the revoked grant are rejected with status
+`401`; Clients ****SHOULD**** handle this gracefully.
 
 
 ## Security Considerations {#security-considerations}
 
 ### Connect Server Trust Model {#server-trust-model}
 
-The Connect Server is treated as an **untrusted relay**. It stores and forwards
-encrypted blobs but cannot read or modify their contents. The security of the
-protocol does not depend on the Connect Server's integrity — a compromised server
-can only:
+The Connect Server is an **untrusted relay**. A compromised server can only:
 
 - Refuse to deliver messages (denial of service).
-- Observe timing and metadata (which DIDs are connecting, when).
-- Return stale or previously seen encrypted blobs (prevented by one-time retrieval
-  and nonce validation).
+- Observe timing and coarse metadata.
+- Attempt to replay blobs (defeated by single-use retrieval, `nonce`/`state`
+  echoes, the `apu` binding, and the `iat`/`exp` window).
 
-A compromised server ****CANNOT****:
-- Read the auth request or response contents.
-- Forge or modify the encrypted payloads (AEAD authentication prevents tampering).
-- Impersonate the Provider or Client.
+It ****CANNOT**** read payloads, forge or undetectably modify them (both
+directions are signed JWTs inside AEAD envelopes), or impersonate either party.
 
-### End-to-End Encryption {#e2e-encryption}
+### Algorithm Pinning {#algorithm-pinning}
 
-Two layers of encryption protect the protocol:
-
-1. **Auth request:** Encrypted with a random 256-bit symmetric key shared via QR
-   code or deep link. The Connect Server never sees this key.
-2. **Auth response:** Encrypted with an ECDH-derived key (Ed25519 → X25519 conversion,
-   then HKDF-SHA256). The shared secret can only be computed by holders of the
-   Client's ephemeral private key and the Delegate DID's private key.
-
-Both layers use XChaCha20-Poly1305 (AEAD), providing both confidentiality and
-integrity.
+Every open operation pins its algorithm set: `enc` is always `XC20P`; request
+`alg` is exactly the channel's mode (`dir` XOR `ECDH-ES`); response `alg` is
+`ECDH-ES`; JWTs are `EdDSA` with `did:jwk` keys only. Implementations
+****MUST**** enforce these allow-lists *before* using any key material, closing
+off algorithm-confusion and cross-channel substitution attacks.
 
 ### PIN Security {#pin-security}
 
-The PIN provides a second factor of authentication for the auth response:
+On the relay channel the PIN is folded into the CEK derivation
+(HKDF-SHA256 with `salt = UTF8(pin)`, `info = UTF8("enbox/connect/v2/pin")`):
 
-- Even if an attacker compromises the Connect Server and obtains the encrypted
-  response, they cannot decrypt it without both the ECDH shared secret (requires
-  the Client's private key) AND the correct PIN.
-- The PIN is never transmitted over the network — it is communicated out-of-band
-  (displayed on the Provider, entered on the Client).
-- The PIN is included in the AEAD's Additional Authenticated Data (AAD), not as
-  input to key derivation. This means the PIN provides authentication, not
-  confidentiality — a brute-force attack on a short PIN is feasible if the attacker
-  already has the ECDH shared secret.
+- An attacker who obtains the response ciphertext **and** compromises the
+  ECDH key agreement still cannot decrypt without the PIN; a wrong PIN yields a
+  different CEK and an AEAD tag failure.
+- The PIN never transits any network channel — it travels human-to-human,
+  wallet screen to app input.
+- Because the ECDH-ES agreement against a fresh X25519 key already provides the
+  cryptographic core, the PIN is a **binding** factor: it ensures the party
+  decrypting the response is the same party the user read the PIN to,
+  defeating relay-side substitution of the response ciphertext.
 
-Providers ****SHOULD**** use PINs of at least 4 digits. Providers ****MAY**** use
-longer PINs or alphanumeric codes for higher-security applications.
+Providers ****SHOULD**** use PINs of at least 4 digits; longer or alphanumeric
+codes ****MAY**** be used.
 
-### Ephemeral DID Security {#ephemeral-did-security}
+### Origin Binding {#origin-binding-security}
 
-- The Client's ephemeral DID is single-use and generated fresh for each connect session.
-  Compromising one session's ephemeral DID does not affect other sessions.
-- The Delegate DID's private keys are transferred to the Client in the encrypted
-  response. The Client ****MUST**** store these keys securely (e.g., in an encrypted
-  vault).
-- The Delegate DID's private keys ****SHOULD NOT**** be stored in plaintext on disk
-  or in browser localStorage without encryption.
+On the popup channel, origins are enforced at two layers: `postMessage`
+origin/source pinning (both directions, never `"*"`), and the
+integrity-protected `apv` header value-checked by the wallet against its own
+origin. A request sealed for wallet origin A cannot be opened by a wallet
+served from origin B. Symmetrically, the `apu = base64url(state)` binding on
+responses ties each response envelope to exactly one outstanding request.
+
+### Key Material {#key-material}
+
+- The Client's ephemeral `clientDid` and X25519 [[ref:Response Key]] are
+  single-handshake keys; compromise of one session does not affect others.
+- The single-use 32-byte relay request key travels fragment-only and dies with
+  the handshake.
+- Wallet-minted delegate private keys transit exactly once, inside the sealed
+  response, and ****MUST**** be stored by the Client in an encrypted vault —
+  never in plaintext storage.
+- With a Client-supplied `delegateDid`, no private key material transits at
+  all; Providers ****MUST NOT**** return key material for such sessions.
 
 ### Replay Protection {#replay-protection}
 
-- The `state` parameter is a random 16-byte value that correlates the auth request
-  with the response. A replayed response for a different session will have a
-  mismatched `state`.
-- The `nonce` parameter is echoed from the request to the response and validated
-  by the Client.
-- Auth request and response blobs are deleted from the Connect Server after retrieval
-  (one-time use), preventing replay of the same flow.
+- `state` correlates request and response, is bound into the response JWE
+  `apu`, and is value-checked on open.
+- `nonce` is echoed and value-checked.
+- Relay blobs are deleted on first retrieval and expire server-side.
+- Responses are valid only within `iat ≤ now + 60` and `now < exp = iat + 600`.
 
-### One-Time Retrieval {#one-time-retrieval}
+### Transport Policy {#transport-policy}
 
-Connect Servers ****MUST**** delete stored auth requests and responses after they
-are retrieved. This ensures:
-
-- A stored blob cannot be retrieved multiple times.
-- An attacker who gains access to the server after the flow completes finds no
-  sensitive data.
-
-Connect Servers ****MUST**** expire stored blobs after their TTL
-(****RECOMMENDED**** 10 minutes for auth requests, 10 minutes for auth responses).
+The envelope layer deliberately leaves transport policy to implementations.
+Implementations ****SHOULD**** enforce: HTTPS-only relay and callback URLs
+(with explicit local-development allowances), bounded response bodies when
+fetching relay blobs, no redirect following, and per-request timeouts.
 
 
 ## Privacy Considerations {#privacy-considerations}
 
 ### Provider DID Non-Disclosure {#provider-non-disclosure}
 
-The user's real DID (the `iss` field in the auth response) is only revealed inside
-the encrypted auth response. The Connect Server and any network observer cannot
-determine which DID the user selected.
+The user's real DID (`providerDid`) is only revealed inside the sealed
+response. The Connect Server and network observers cannot determine which DID
+the user selected; response JWTs are signed by session-scoped `did:jwk`
+identifiers, not the user's DID.
 
 ### Delegate DID Unlinkability {#delegate-unlinkability}
 
-Each connect session creates a fresh Delegate DID. Different applications connected
-to the same user's DID receive different Delegate DIDs. This prevents colluding
-applications from correlating a user across services by comparing Delegate DIDs.
+Each wallet-minted session uses a fresh Delegate DID, so colluding applications
+cannot correlate a user across services by comparing Delegate DIDs. (Grants on
+the same DWN remain correlatable to parties who can read that DWN's permission
+records.)
 
-However, the Delegate DIDs all receive grants from the same Provider DID, so
-correlation is possible at the DWN level if two applications access the same DWN
-and can observe each other's grant records.
+### Client Metadata Minimization {#client-metadata-minimization}
+
+`clientMetadata` is display-only and self-reported. Clients ****SHOULD****
+send only what improves the user's consent decision; Providers ****MUST****
+bound the size of any metadata they persist and ****MUST NOT**** treat it as
+verified identity.
 
 ### Connect Server Data Minimization {#data-minimization}
 
-Connect Servers ****SHOULD**** minimize the metadata they retain:
-
-- ****MUST NOT**** log the contents of encrypted blobs.
-- ****SHOULD NOT**** retain metadata (source IPs, timestamps) beyond what is
-  necessary for rate limiting and abuse prevention.
-- ****SHOULD**** delete all session data after the flow completes or the TTL expires.
+Connect Servers ****MUST NOT**** log blob contents, ****SHOULD NOT**** retain
+metadata beyond abuse-prevention needs, and ****SHOULD**** delete all session
+data at retrieval or TTL expiry.
 
 
 ## Normative References
@@ -1097,6 +1051,12 @@ Connect Servers ****SHOULD**** minimize the metadata they retain:
 
 [[spec:RFC7516]]
 ~ [JSON Web Encryption (JWE)](https://datatracker.ietf.org/doc/html/rfc7516). M. Jones, J. Hildebrand. May 2015.
+
+[[spec:RFC7518]]
+~ [JSON Web Algorithms (JWA)](https://datatracker.ietf.org/doc/html/rfc7518). M. Jones. May 2015.
+
+[[spec:RFC8037]]
+~ [CFRG Elliptic Curve Diffie-Hellman (ECDH) and Signatures in JSON Object Signing and Encryption (JOSE)](https://datatracker.ietf.org/doc/html/rfc8037). I. Liusvaara. January 2017.
 
 [[spec:RFC7748]]
 ~ [Elliptic Curves for Security](https://datatracker.ietf.org/doc/html/rfc7748). A. Langley, M. Hamburg, S. Turner. January 2016.
