@@ -453,7 +453,7 @@ A delegation response ****MUST NOT**** contain `responseType`.
 
 - `exp` is `iat + 600`.
 - `delegateDid` is the DID the grants were issued to. When the request supplied `delegateDid`, it ****MUST**** be that DID.
-- `delegatePortableDid` is present exactly when the wallet created the delegate DID. It is a portable DID object with required `uri`, `document`, and `metadata` properties (no `keyManager`) and `privateKeys` holding the delegate's Ed25519 signing key and the X25519 private key derived from it. It ****MUST**** be absent when the request supplied `delegateDid`.
+- `delegatePortableDid` is present exactly when the wallet created the delegate DID. It is a portable DID object `{ uri, document, metadata, privateKeys }` (with no `keyManager`), where `document.verificationMethod` contains the single `#0` `Ed25519` `JsonWebKey` expanded across all verification relationships and `privateKeys` contains two JWKs: the delegate's `Ed25519` signing key and the `X25519` private key converted from it. It ****MUST**** be absent when the request supplied `delegateDid`.
 - `delegateGrants` contains every grant issued, as `RecordsWrite` messages with their data in `encodedData`: the session grants and their companion revocation grants.
 - `sessionRevocations` pairs each session grant with its revocation grant (see [Provider Processing](#provider-processing)).
 - `authenticationProof` is present exactly when the request contained `authentication`.
@@ -507,14 +507,15 @@ When an application needs proof of who approved, it asks for an
 
 ### Encryption
 
-Every envelope is a compact JWE ([[spec:RFC7516]]) whose content is encrypted
-with XChaCha20-Poly1305, `"enc": "XC20P"`:
+Every envelope is a 5-part compact JWE ([[spec:RFC7516]])
+`<protected>..<iv>.<ciphertext>.<tag>` whose content is encrypted with
+XChaCha20-Poly1305, `"enc": "XC20P"`:
 
 - a 256-bit content encryption key;
-- a random 24-byte nonce, in the JWE's initialization vector;
-- a 16-byte authentication tag;
-- the ASCII bytes of the encoded protected header as additional authenticated
-  data; and
+- a random 24-byte nonce, in the JWE's initialization vector (`<iv>`);
+- the ciphertext without authentication tag (`<ciphertext>`);
+- the detached 16-byte Poly1305 authentication tag (`<tag>`);
+- the ASCII bytes of the base64url-encoded protected header (`<protected>`) as additional authenticated data; and
 - an empty encrypted-key part, since no key is wrapped.
 
 The header always has `"cty": "JWT"`, and a `typ` of `enbox-connect-req` for a
@@ -534,10 +535,12 @@ and `cty` are as stated. It ****MUST**** reject any other envelope.
 
 #### Deriving a Key with `ECDH-ES`
 
-The sender creates a fresh X25519 key pair for the one envelope, and puts the
-public key in the header as `epk`. Both sides compute the X25519 shared
-secret `Z`, the sender from its private key and the recipient's public key,
-the recipient from its private key and `epk`.
+The sender creates a fresh X25519 key pair ([[spec:RFC7748]]) for the one
+envelope, and puts the public key in the header as `epk`
+(`{ "kty": "OKP", "crv": "X25519", "x": "<base64url>" }`, with no private or
+extra parameters). Both sides compute the X25519 shared secret `Z`, the sender
+from its private key and the recipient's public key, the recipient from its
+private key and `epk`.
 
 An implementation ****MUST**** reject a `Z` that is all zeros, which is what a
 malicious public key of low order produces. It ****MUST**** also refuse to
@@ -594,19 +597,20 @@ key = HKDF-SHA-256(
 ```
 
 The PIN appears nowhere in the envelope. A recipient with the wrong PIN
-derives a different key, and decryption fails. On the popup transport there
-is no PIN and this step is skipped.
+derives a different key, and decryption fails. On the popup transport no PIN is
+supplied and this step is skipped completely (note that passing an empty string
+`""` as the PIN still runs HKDF with a 0-byte salt and produces a different key
+from omitting the PIN).
 
 #### Checking a Response
 
 Having decrypted a response and verified its signature, an application
-****MUST**** check that:
+****MUST**** check (with `now = floor(unixTimeSeconds)`) that:
 
 - `aud` is the `clientDid` of its request;
 - `nonce` and `state` are those of its request;
 - `providerDid` is the `expectedProviderDid` of its request, if it set one; and
-- `exp` is later than `iat`, `iat` is no more than 60 seconds in the future,
-  and `exp` has not passed.
+- `exp > iat`, `iat <= now + 60`, and `now < exp`.
 
 ## Owner Authentication Proofs
 
@@ -633,7 +637,8 @@ A proof is a Compact JWS.
   ```
   `alg` follows from the signing key: `EdDSA` for Ed25519, `ES256K` for
   secp256k1, `ES256` for P-256. The signature is always 64 bytes; for the two
-  ECDSA algorithms it is `R || S`.
+  ECDSA algorithms it is fixed-width `R || S` (never ASN.1 `DER`), and verifiers
+  ****MUST**** accept both low-`S` and high-`S` signatures.
 - **Payload**, with exactly these eight properties:
   ```json
   {
@@ -650,14 +655,18 @@ A proof is a Compact JWS.
 - **Serialization**: the header and the payload are each written in the
   canonical form described below, then base64url-encoded. The signature is
   over the ASCII string `<header>.<payload>`.
-- **Lifetime and size**: a wallet sets `exp` to `iat + 300`. A verifier rejects
-  a proof whose `exp` is not later than its `iat`, whose lifetime (`exp - iat`)
-  exceeds 300 seconds, whose `iat` is more than 30 seconds in the future, or
-  whose `exp` has passed. A proof is at most `16,384` characters.
+- **Lifetime and size**: `iat` and `exp` are safe integers; a wallet sets `exp`
+  to `iat + 300`. With `now = floor(unixTimeSeconds)`, a verifier rejects a
+  proof when `exp <= iat`, `exp - iat > 300`, `iat > now + 30`, or `now >= exp`.
+  A proof is at most `16,384` characters.
 - **`request_hash`** is computed over the *canonical form* of the request
-  exactly as the client created it: compact JSON with no whitespace, object keys
-  sorted by UTF-16 code unit, strings escaped as ECMAScript `JSON.stringify`
-  escapes them (a lone surrogate becomes a `\uXXXX` escape), and absent
+  exactly as the client created it (matching [[spec:RFC8785]] JSON
+  Canonicalization Scheme): compact JSON with no whitespace; object keys sorted
+  by UTF-16 code unit (note this differs from UTF-8 byte order when keys mix
+  `U+E000..U+FFFF` with supplementary characters `U+10000+`); numbers
+  serialized per ECMAScript `Number::toString` (integer-valued floats emit no
+  `.0`, `-0` becomes `"0"`); strings escaped as ECMAScript `JSON.stringify`
+  escapes them (a lone surrogate becomes a `\uXXXX` escape); and absent
   properties omitted. Only objects, arrays, strings, finite numbers, booleans,
   and `null` can be canonicalized. The canonical request is at most `262,144`
   bytes and at most 32 levels deep.
@@ -740,11 +749,14 @@ A wallet first checks the request, and refuses it if any check fails:
 ### The Delegate
 
 - If the request has no `delegateDid`, the wallet creates the delegate: a new
-  `did:jwk` with an Ed25519 key. It returns the delegate's keys in
-  `delegatePortableDid`, including the X25519 private key converted from the
-  Ed25519 key, which is the delegate's root key for DWN encryption.
+  `did:jwk` with an Ed25519 key (with `use` omitted on the JWK). It returns the
+  delegate's keys in `delegatePortableDid`, including the X25519 private key
+  converted from the Ed25519 seed (`SHA-512(seed)[0..31]` clamped per
+  [[spec:RFC8032]]), which is the delegate's root key for DWN encryption.
 - If the request has a `delegateDid`, that DID is the delegate, and the wallet
-  returns no key material. `delegateDid` ****MUST**** be a bare DID.
+  returns no key material. `delegateDid` ****MUST**** be a bare DID; if it is a
+  `did:jwk` and the session requires grant keys, its JWK ****MUST**** omit
+  `"use": "sig"` so that `did:jwk` resolution exposes `#0` under `keyAgreement`.
 
 ### The Session
 
@@ -772,22 +784,24 @@ wallet can later show the user which application holds which grants:
 | `transport` | | `"relay"` or `"postMessage"` |
 
 Everything except `id`, `createdAt`, `expiresAt`, and a wallet-verified
-`origin` is the application's own claim. A wallet truncates values to the
-limits above. `connectSession` has no effect on authorization.
+`origin` is the application's own claim. A wallet omits empty (`""`) optional
+string values (and empty entries in `languages`) and truncates remaining values
+to the limits above. `connectSession` has no effect on authorization.
 
 ### Modules (required)
 
 For each requested module, the wallet makes sure the owner's nodes have it
-installed, with any `$keyAgreement` keys the definition requires (when any type
-has `encryptionRequired: true` or any rule set declares `$role: true`). The keys
-are the owner's module and path keys, derived as the
-[DWN specification](https://dwn-spec.pages.dev#module-keys) defines, and added
-to the definition as `$keyAgreement` by the wallet.
+installed. Whenever a module requires key agreement (`encryptionRequired: true`
+on any type, or `$role: true` on any path in `structure`), the wallet derives
+the owner's module and path keys as the
+[DWN specification](https://dwn-spec.pages.dev#module-keys) defines and injects
+`$keyAgreement` onto **both** top-level `definition.$keyAgreement` **and every
+non-`$ref` rule set in `structure`**.
 
 | Installed on the owner's node | The wallet |
 |---|---|
 | Nothing | Installs the requested definition |
-| The requested definition, without the keys it needs | Installs it again, with keys |
+| The requested definition, missing `$keyAgreement` on top-level `definition` or any non-`$ref` path when key agreement is required | Installs it again, with keys on all of them |
 | The requested definition, with the owner's keys | Does nothing |
 | A different definition (comparing everything except `$keyAgreement` and `$encryption`) | ****MUST NOT**** replace it unless the user explicitly approves the replacement |
 | Any definition whose `$keyAgreement` keys are not the owner's | ****MUST**** refuse the request |
@@ -821,19 +835,21 @@ they do not hold authorizes nothing.
 
 ### Grant Keys (required)
 
-A grant conveys authority but no keys. For each session grant that can have
-[grant keys](https://dwn-spec.pages.dev#grant-keys), and whose module requires
-key agreement (`encryptionRequired: true` on any type or `$role: true` on any
-path), the wallet writes one grant key record for every key the grant covers.
-This step runs for a module only if the request includes at least one
-`Records`/`Read` scope for it.
+A grant conveys authority but no keys. For each requested module whose request
+includes at least one `Records`/`Read` scope and whose definition requires key
+agreement (`encryptionRequired: true` on any type or `$role: true` on any path),
+the wallet inspects every grant-key-eligible session grant issued for that
+module (both `Records`/`Read` and `Records`/`Write` grants; see
+[Grant Key Coverage](https://dwn-spec.pages.dev#grant-key-coverage)) and writes
+one grant key record for every key those grants cover.
 
 - For a delegate the wallet created, the records are `grantKey` records,
   encrypted to the delegate's derived key at
   `["modulePath", "https://identity.foundation/dwn/modules/encryption", "grantKey"]`.
 - For a delegate the application supplied, the wallet resolves the delegate's
-  DID (`keyAgreement[0]`, accepting X25519 or converting an Ed25519 key to
-  X25519) and writes `wrappedGrantKey` records wrapped to that root X25519 key.
+  DID (`keyAgreement[0]`, accepting X25519 or converting an Ed25519 key via the
+  birational map to X25519) and writes `wrappedGrantKey` records wrapped to that
+  root X25519 key.
 
 Each record ****MUST**** be accepted (`202` or `409`) by at least one of the
 owner's remote endpoints before the wallet responds.
@@ -905,8 +921,10 @@ the [DWN Sync Protocol](https://dwn-sync-spec.pages.dev)): a grant with no
 
 A client shows the user the state of a session from its grants' `dateExpires`
 (not `connectSession.expiresAt`, though `connectSession.id` and
-`connectSession.createdAt` are used to group grants into sessions and compute
-the 10% `expiring-soon` window):
+`connectSession.createdAt` group grants into sessions and compute the 10%
+`expiring-soon` window; when multiple complete sessions exist across the owner
+and delegate partitions, the session with the latest `connectSession.createdAt`,
+tie-broken by greatest `connectSession.id`, is selected):
 
 | State | Condition |
 |---|---|
@@ -1137,6 +1155,3 @@ Which of the resulting grants are delegated is given under
 ~ Enbox Decentralized Web Node Sync Protocol Specification.
 
 [[spec]]
-
-[RFC 7748 — Elliptic Curves for Security](https://datatracker.ietf.org/doc/html/rfc7748)
-~ A. Langley, M. Hamburg, S. Turner. January 2016.
