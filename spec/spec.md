@@ -208,8 +208,7 @@ A relay ****SHOULD**** also:
 - send `Cache-Control: no-store` on every response; and
 - limit the size of the bodies it accepts.
 
-Its routes allow cross-origin requests from any origin, and are subject to
-the hosting server's rate limits.
+A relay ****MUST**** allow cross-origin requests from any origin (`Access-Control-Allow-Origin: *`, `Access-Control-Allow-Methods: GET, POST, OPTIONS`, `Access-Control-Allow-Headers: Content-Type`, answering `OPTIONS` with `204`), and its routes are subject to the hosting server's rate limits.
 
 ### 1. Store a Request (`POST /connect/par`)
 
@@ -228,7 +227,9 @@ Content-Type: application/json
 | `400` | `{ "ok": false, "status": { "code": 400, "message": "Bad Request: Missing 'request' parameter" } }` |
 
 `request` is the encrypted request, a string. `request_uri` is where a wallet
-fetches it.
+fetches it (the reference client extracts `requestId` by matching
+`/connect/authorize/<requestId>.jwt`, so relays ****SHOULD**** preserve that
+path structure).
 
 ### 2. Fetch a Request (`GET /connect/authorize/:requestId.jwt`)
 
@@ -254,8 +255,9 @@ An unknown or expired request is `false`.
 
 Used by the wallet. This is the `callbackUrl` of the request's `reply`.
 
-The body is either form-encoded, `id_token=<response>&state=<state>`, or JSON,
-`{ "id_token": "<response>", "state": "<state>" }`. `id_token` is the
+The body is either form-encoded (`Content-Type: application/x-www-form-urlencoded`,
+`id_token=<response>&state=<state>`) or JSON (`Content-Type: application/json`,
+`{ "id_token": "<response>", "state": "<state>" }`). `id_token` is the
 encrypted response, or `DENIED`.
 
 | Response | Body |
@@ -283,7 +285,7 @@ response. It is best-effort: nothing depends on it but what the wallet shows.
 
 | | |
 |---|---|
-| Request | `{ "state": "<state>" }` |
+| Request | `Content-Type: application/json`, `{ "state": "<state>" }` |
 | `201` | `{ "ok": true, "status": { "code": 201, "message": "Created" } }` |
 | `400` | `{ "ok": false, "status": { "code": 400, "message": "Bad Request: Missing 'state' parameter" } }` |
 
@@ -404,19 +406,20 @@ application announces a local DWN server; see the DWN Transport Protocol.
   - `audience` — an `https:` URL of at most 2048 characters with no user information, query, or fragment, written in its normalized form (either the bare origin, or the form a URL parser serializes it to).
   - `challenge` — 22 to 128 base64url characters, issued by the relying service for one use.
 - `permissionRequests` — ****REQUIRED****. An array of `{ moduleDefinition, permissionScopes }` objects with no other properties. `moduleDefinition` is a DWN module definition; `permissionScopes` is an array of DWN permission scopes for that module (see [Permission Model](#permission-model)). It is `[]` when `requestType` is `"authenticate"`.
-- `requestedSessionTtlSeconds` — ****OPTIONAL****. The grant lifetime the application would like, in seconds. Advisory. It is rounded down and ****MUST**** come to at least 1. Not allowed with `"authenticate"`.
+- `requestedSessionTtlSeconds` — ****OPTIONAL****. The grant lifetime the application would like, in seconds. Advisory. It ****MUST**** be a finite number that rounds down to at least 1. Not allowed with `"authenticate"`.
 - `delegateDid` — ****OPTIONAL****. A DID the application already controls and wants the grants issued to. ****REQUIRED**** for `"refresh"`; not allowed with `"authenticate"`.
 - `requestType` — ****OPTIONAL****. `"connect"` (the default), `"refresh"`, or `"authenticate"`.
 - `expectedProviderDid` — ****OPTIONAL****. The owner DID the application expects. A wallet ****MUST**** refuse to answer as any other DID.
 - `supportedDidMethods` — ****REQUIRED****. The DID methods the application accepts for the owner DID, such as `["did:dht", "did:jwk"]`.
-- `nonce`, `state` — ****REQUIRED****. Random strings; the reference client uses 16 random bytes, base64url-encoded. The response echoes both. `state` also names the response on the relay.
+- `nonce`, `state` — ****REQUIRED****. Random strings; the reference client uses 16 random bytes, base64url-encoded. The response echoes both. `state` also names the response on the relay, so on the Relay Transport it ****MUST**** be URL-path-safe (e.g., unpadded base64url, since `GET /connect/token/:state.jwt` does not percent-encode or decode `:state`).
 - `responseKey` — ****REQUIRED****. A fresh X25519 public key, as a JWK with no private part. The response is encrypted to it.
 - `reply` — ****REQUIRED****. `{ "mode": "direct_post", "callbackUrl": "<url>" }` on the Relay Transport, or `{ "mode": "post_message" }` on the popup transport.
 
 A request that contains `authentication` is validated more strictly, because
-the proof covers the whole request: `appName` is 1 to 256 characters; `nonce`
-and `state` are 22 to 128 base64url characters; `permissionRequests` has at
-most 32 entries; `supportedDidMethods` has 1 to 8 distinct entries of the form
+the proof covers the whole request: `clientDid` ****MUST**** be a bare `did:jwk`
+(no path, query, or fragment); `appName` is 1 to 256 characters; `nonce` and
+`state` are 22 to 128 base64url characters; `permissionRequests` has at most 32
+entries; `supportedDidMethods` has 1 to 8 distinct entries of the form
 `did:<method>`; `callbackUrl`, when present, is 1 to 2048 characters; and the
 request in canonical form is at most 262,144 bytes (see
 [Owner Authentication Proofs](#owner-authentication-proofs)).
@@ -435,7 +438,12 @@ A delegation response ****MUST NOT**** contain `responseType`.
   "nonce": "<request.nonce>",
   "state": "<request.state>",
   "delegateGrants": [ ... ],
-  "delegatePortableDid": { ... },
+  "delegatePortableDid": {
+    "uri": "did:jwk:...",
+    "document": { ... },
+    "metadata": { ... },
+    "privateKeys": [ ... ]
+  },
   "sessionRevocations": [
     { "grantId": "<session-grant-recordId>", "revocationGrantId": "<revocation-grant-recordId>" }
   ],
@@ -445,7 +453,7 @@ A delegation response ****MUST NOT**** contain `responseType`.
 
 - `exp` is `iat + 600`.
 - `delegateDid` is the DID the grants were issued to. When the request supplied `delegateDid`, it ****MUST**** be that DID.
-- `delegatePortableDid` is present exactly when the wallet created the delegate DID. It is the delegate's DID document and private keys: its Ed25519 signing key and the X25519 key derived from it. It ****MUST**** be absent when the request supplied `delegateDid`.
+- `delegatePortableDid` is present exactly when the wallet created the delegate DID. It is a portable DID object with required `uri`, `document`, and `metadata` properties (no `keyManager`) and `privateKeys` holding the delegate's Ed25519 signing key and the X25519 private key derived from it. It ****MUST**** be absent when the request supplied `delegateDid`.
 - `delegateGrants` contains every grant issued, as `RecordsWrite` messages with their data in `encodedData`: the session grants and their companion revocation grants.
 - `sessionRevocations` pairs each session grant with its revocation grant (see [Provider Processing](#provider-processing)).
 - `authenticationProof` is present exactly when the request contained `authentication`.
@@ -680,14 +688,20 @@ A **verifier**:
   2048 characters, differs from `clientDid` and from `delegateDid`, uses one of
   the request's `supportedDidMethods`, and equals `expectedProviderDid` when
   the request set one.
-- ****MUST**** resolve `providerDid` afresh, refuse a deactivated DID, and take a
-  public key from a verification method listed under `authentication`. If the
-  key has an `alg`, it ****MUST**** match the proof's.
+- ****MUST**** resolve `providerDid` afresh, refuse a deactivated DID or a
+  document whose `id` does not equal `providerDid` or that has more than 64
+  `authentication` or `verificationMethod` entries, and verify that `kid`
+  resolves uniquely under `authentication` (and, if referenced by string, once
+  in `verificationMethod`), has `controller === providerDid`, and yields a
+  public JWK (no private parameters such as `d` or `k`). If the key has an
+  `alg`, it ****MUST**** match the proof's.
 - ****MUST**** check that `iss` and `sub` are `providerDid`; that `aud`, `nonce`,
   and `request_hash` match the request it issued; and that `purpose` is
   `enbox-connect-authentication`.
-- ****MUST**** check the time window, and check it again immediately before it
-  accepts the proof, since resolving the DID takes time.
+- ****MUST**** check the time window, re-check it after DID resolution and
+  **before** consuming the replay challenge (so an expired proof cannot burn an
+  outstanding challenge), and check it again immediately before accepting the
+  proof.
 - ****MUST****, if it is a relying service, consume each `(audience, challenge)`
   pair durably and atomically, so that a proof is accepted once. A client
   running in a browser can verify a proof cryptographically but cannot provide
@@ -720,7 +734,7 @@ A wallet first checks the request, and refuses it if any check fails:
 3. No `moduleDefinition` contains `$keyAgreement` or `$encryption` anywhere. Encryption keys always come from the wallet.
 4. Every scope in `permissionScopes` is a valid DWN permission scope whose `module` equals its `moduleDefinition.module`.
 5. No scope is `Modules`/`Configure`. The wallet installs modules itself; it does not delegate that.
-6. `requestedSessionTtlSeconds`, if present, rounds down to at least 1.
+6. `requestedSessionTtlSeconds`, if present (and not overridden by a wallet-approved TTL), is finite and rounds down to at least 1.
 7. If the request contains `authentication`, the checks in [Wallet and Verifier Requirements](#wallet-and-verifier-requirements) pass.
 
 ### The Delegate
@@ -764,8 +778,9 @@ limits above. `connectSession` has no effect on authorization.
 ### Modules (required)
 
 For each requested module, the wallet makes sure the owner's nodes have it
-installed, with the encryption keys the definition needs. The keys are the
-owner's module and path keys, derived as the
+installed, with any `$keyAgreement` keys the definition requires (when any type
+has `encryptionRequired: true` or any rule set declares `$role: true`). The keys
+are the owner's module and path keys, derived as the
 [DWN specification](https://dwn-spec.pages.dev#module-keys) defines, and added
 to the definition as `$keyAgreement` by the wallet.
 
@@ -774,7 +789,7 @@ to the definition as `$keyAgreement` by the wallet.
 | Nothing | Installs the requested definition |
 | The requested definition, without the keys it needs | Installs it again, with keys |
 | The requested definition, with the owner's keys | Does nothing |
-| A different definition (comparing everything except `$keyAgreement`) | ****MUST NOT**** replace it unless the user explicitly approves the replacement |
+| A different definition (comparing everything except `$keyAgreement` and `$encryption`) | ****MUST NOT**** replace it unless the user explicitly approves the replacement |
 | Any definition whose `$keyAgreement` keys are not the owner's | ****MUST**** refuse the request |
 
 A module that is requested with no scopes and is named in another requested
@@ -807,16 +822,18 @@ they do not hold authorizes nothing.
 ### Grant Keys (required)
 
 A grant conveys authority but no keys. For each session grant that can have
-[grant keys](https://dwn-spec.pages.dev#grant-keys), and whose module uses
-encryption, the wallet writes one grant key record for every key the grant
-covers. This step runs for a module only if the request includes at least one
+[grant keys](https://dwn-spec.pages.dev#grant-keys), and whose module requires
+key agreement (`encryptionRequired: true` on any type or `$role: true` on any
+path), the wallet writes one grant key record for every key the grant covers.
+This step runs for a module only if the request includes at least one
 `Records`/`Read` scope for it.
 
 - For a delegate the wallet created, the records are `grantKey` records,
-  encrypted to the delegate.
+  encrypted to the delegate's derived key at
+  `["modulePath", "https://identity.foundation/dwn/modules/encryption", "grantKey"]`.
 - For a delegate the application supplied, the wallet resolves the delegate's
-  DID to learn its root X25519 public key, and the records are
-  `wrappedGrantKey` records wrapped to that key.
+  DID (`keyAgreement[0]`, accepting X25519 or converting an Ed25519 key to
+  X25519) and writes `wrappedGrantKey` records wrapped to that root X25519 key.
 
 Each record ****MUST**** be accepted (`202` or `409`) by at least one of the
 owner's remote endpoints before the wallet responds.
@@ -836,9 +853,10 @@ delegate revoke that one grant, and nothing else:
 ```
 
 The companion grant is `delegated: true`, expires with the session, and has no
-`connectSession`. The wallet sends it to the owner's remote endpoints, but does
-not wait for them to accept it; a client makes sure of that itself before it
-relies on the grant (see [Ending a Session](#ending-a-session)).
+`connectSession`. The wallet sends it best-effort to the owner's remote
+endpoints (awaiting delivery attempts but not requiring any endpoint to accept
+it); a client makes sure of that itself before it relies on the grant (see
+[Ending a Session](#ending-a-session)).
 
 The response's `delegateGrants` lists the session grants and then the
 companion grants. `sessionRevocations` holds one
@@ -847,9 +865,9 @@ companion grants. `sessionRevocations` holds one
 ### Reference Timing
 
 The reference wallet waits at most 10 seconds for a DID to resolve and for
-each request to an endpoint, sends to at most 8 endpoints at a time, and gives
-the delivery of all session grants to one endpoint 20 seconds in total. These
-are not requirements.
+each request to an endpoint, caps fan-out concurrency at 8, and gives the
+entire session-grant delivery batch across all endpoints 20 seconds in total.
+These are not requirements.
 
 ## Client Processing
 
@@ -863,7 +881,7 @@ a client ****MUST**** also check that:
 2. every grant in `delegateGrants` is from `providerDid` to the delegate;
 3. every grant listed as a `revocationGrantId` in `sessionRevocations` has the scope `Records`/`Write` on `https://identity.foundation/dwn/permissions` with `contextId` equal to the paired `grantId`;
 4. every other grant is within a scope the client requested: it has the same `interface` and `method` as a requested scope, and every property of that requested scope has the same value in the grant; and
-5. if the client requested any permissions, at least one such grant is present.
+5. if `permissionRequests` is non-empty, at least one such grant is present.
 
 A response that fails a check ****MUST**** be rejected. The grants already
 exist on the owner's nodes by then, so the client ****SHOULD**** tell the user
@@ -881,11 +899,14 @@ delegate on the owner's behalf, and the `Modules`/`Query` grant by
 
 What a client may synchronize follows from its `Messages`/`Read` grants (see
 the [DWN Sync Protocol](https://dwn-sync-spec.pages.dev)): a grant with no
-`module` allows everything, and a grant for a whole module allows that module.
-Expired grants allow nothing.
+`module` allows everything, and a whole-module grant allows that module
+(excluding `https://identity.foundation/dwn/permissions` and grants narrowed by
+`modulePath` or `contextId`). Expired or revoked grants allow nothing.
 
-A client shows the user the state of a session from its grants, not from
-`connectSession`:
+A client shows the user the state of a session from its grants' `dateExpires`
+(not `connectSession.expiresAt`, though `connectSession.id` and
+`connectSession.createdAt` are used to group grants into sessions and compute
+the 10% `expiring-soon` window):
 
 | State | Condition |
 |---|---|
@@ -1115,20 +1136,7 @@ Which of the resulting grants are delegated is given under
 [DWN Sync Protocol Specification](https://dwn-sync-spec.pages.dev)
 ~ Enbox Decentralized Web Node Sync Protocol Specification.
 
-[[spec:RFC7515]]
-~ [JSON Web Signature (JWS)](https://datatracker.ietf.org/doc/html/rfc7515). M. Jones, J. Bradley, N. Sakimura. May 2015.
+[[spec]]
 
-[[spec:RFC7516]]
-~ [JSON Web Encryption (JWE)](https://datatracker.ietf.org/doc/html/rfc7516). M. Jones, J. Hildebrand. May 2015.
-
-[[spec:RFC7518]]
-~ [JSON Web Algorithms (JWA)](https://datatracker.ietf.org/doc/html/rfc7518). M. Jones. May 2015.
-
-[[spec:RFC7748]]
-~ [Elliptic Curves for Security](https://datatracker.ietf.org/doc/html/rfc7748). A. Langley, M. Hamburg, S. Turner. January 2016.
-
-[[spec:RFC5869]]
-~ [HMAC-based Extract-and-Expand Key Derivation Function (HKDF)](https://datatracker.ietf.org/doc/html/rfc5869). H. Krawczyk, P. Eronen. May 2010.
-
-[[spec:RFC2119]]
-~ [Key words for use in RFCs to Indicate Requirement Levels](https://datatracker.ietf.org/doc/html/rfc2119). S. Bradner. March 1997.
+[RFC 7748 — Elliptic Curves for Security](https://datatracker.ietf.org/doc/html/rfc7748)
+~ A. Langley, M. Hamburg, S. Turner. January 2016.
