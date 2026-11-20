@@ -20,42 +20,35 @@ Enbox Connect Protocol
 
 ## Abstract
 
-The Enbox Connect Protocol (v2) defines a unified, transport-agnostic,
-end-to-end encrypted handshake between an application ([[ref:Client]]) and a
-user's wallet or identity agent ([[ref:Provider]]) for:
+The Enbox Connect Protocol is how an application asks a user's wallet for
+access to the user's [Decentralized Web Node](https://dwn-spec.pages.dev), and
+how the wallet answers.
 
-1. **Delegated DWN access (`connect`)** — configuring requested DWN modules,
-   issuing scoped, time-bounded [[ref:Permission Grants]] for a
-   [[ref:Delegate DID]] (wallet-minted or app-supplied), delivering module
-   decryption keys (`grantKey` / `wrappedGrantKey`), and issuing per-grant
-   self-revocation grants.
-2. **Delegated grant refresh (`refresh`)** — renewing expiring grants for an
-   existing local [[ref:Delegate DID]] pinned to a specific [[ref:Provider]] DID
-   without minting a new identity.
-3. **Owner authentication (`authenticate` or attached to `connect`)** —
-   cryptographically proving control of the user's owner DID
-   (`enbox-connect-owner-authentication+jwt`) bound to a relying-service HTTPS
-   audience, single-use challenge, and canonical request digest.
+An application can ask for three things:
 
-Enbox Connect v2 removes all SIOPv2 and OpenID Connect payload framing. One
-canonical signed-and-encrypted envelope format runs over two first-class
-end-to-end encrypted transports: a stateless HTTP **Relay Transport** (with
-fragment-only wallet URIs, QR codes, and HKDF PIN strengthening) and a
-**Browser Popup `postMessage` Transport** (with ephemeral ECDH-ES and strict
-origin/source pinning).
+1. **Access.** The wallet installs the DWN modules the application needs,
+   and issues time-limited permission grants to a *delegate* DID that the
+   application controls. It also delivers the keys the delegate needs to read
+   encrypted records.
+2. **Renewal.** The wallet issues fresh grants to a delegate the application
+   already has.
+3. **Proof of identity.** The wallet proves, to a service the application
+   names, that the user controls their DID.
+
+The request and the response are signed and end-to-end encrypted. They travel
+by one of two routes: through a **relay**, which lets the wallet be on another
+device and be reached by a QR code or a link; or directly between two browser
+windows, with **`postMessage`**.
 
 ## Status of This Document
 
 Enbox Connect Protocol is a _DRAFT_ specification under development by
-[Enbox](https://enbox.org) (maintained in the `enboxorg/web5-connect-spec`
-repository; earlier drafts were titled "Web5 Connect Protocol"). It is a
-companion specification to the
+[Enbox](https://enbox.org). Earlier drafts were titled "Web5 Connect
+Protocol". It is a companion to the
 [DWN specification](https://github.com/enboxorg/dwn-spec) and the
-[DWN Transport Protocol specification](https://github.com/enboxorg/dwn-transport-spec),
-and reflects the current implementation in
-[enboxorg/enbox](https://github.com/enboxorg/enbox) (`@enbox/connect`,
-`@enbox/dwn-server`, `@enbox/agent`, `@enbox/auth`, `@enbox/browser`,
-`@enbox/cli`, `@enbox/crypto`, `@enbox/dwn-sdk-js`, and `@enbox/modules`).
+[DWN Transport Protocol](https://github.com/enboxorg/dwn-transport-spec),
+and describes the protocol as implemented by the reference implementation,
+[enboxorg/enbox](https://github.com/enboxorg/enbox).
 
 The specification will be updated to incorporate feedback. We encourage reviewers
 to submit [GitHub Issues](https://github.com/enboxorg/web5-connect-spec/issues)
@@ -66,318 +59,292 @@ The key words "****MUST****", "****MUST NOT****", "****REQUIRED****",
 "****RECOMMENDED****", "****MAY****", and "****OPTIONAL****" in this document
 are to be interpreted as described in [[spec:RFC2119]].
 
+Where this document gives a number as what "the reference" client, wallet, or
+relay does, the number is a default of the reference implementation and not a
+requirement.
+
 ## Terminology
 
-[[def:Client, Application, Relying Party]]
-~ The application requesting delegated DWN access and/or owner authentication
-from a user's [[ref:Provider]].
+[[def:Client, Application]]
+~ The application that sends a request.
 
-[[def:Provider, Wallet, Identity Agent]]
-~ The trusted software managing the user's owner DID(s), private keys, and DWN
-access. Evaluates requests, obtains user consent, prepares modules, issues
-grants and encryption keys, and signs owner authentication proofs.
+[[def:Provider, Wallet]]
+~ The software that holds the user's DIDs and keys. It shows the user the
+request, and carries it out if the user approves.
 
-[[def:Connect Server, Relay]]
-~ A stateless store-and-forward HTTP intermediary exposing 7 endpoints under
-`/connect/*` with a 600-second TTL. Sees only ciphertext blobs and opaque
-session-progress flags.
+[[def:Owner DID]]
+~ The user's DID: the one whose node the application wants to use. In messages
+it is called `providerDid`.
 
-[[def:Delegate DID]]
-~ A DID (typically `did:jwk`) authorized via [[ref:Permission Grants]] to act
-for a user session. May be minted by the [[ref:Provider]] (returning
-`delegatePortableDid` with Ed25519 + derived X25519 keys) or pre-supplied by
-the [[ref:Client]] (`request.delegateDid`, keeping delegate private keys local
-to the app).
+[[def:Delegate DID, Delegate]]
+~ A DID that acts for the user within the limits of the grants it holds. The
+wallet can create one for the application, or the application can supply one
+of its own and keep the keys to itself.
+
+[[def:Relay, Connect Server]]
+~ An HTTP service that holds an encrypted request until the wallet collects
+it, and an encrypted response until the application collects it. It cannot
+read either.
 
 [[def:Permission Grant, Permission Grants]]
-~ An immutable DWN record in the built-in Permissions Module at
-`https://identity.foundation/dwn/permissions` authorizing a grantee DID for a
-bounded scope and lifetime. See the
+~ A DWN record by which a DID authorizes another DID to act on its node, for a
+stated scope and time. Defined in the
 [DWN specification](https://github.com/enboxorg/dwn-spec).
 
 [[def:Delegated Grant]]
-~ A [[ref:Permission Grant]] with `delegated: true` allowing the grantee to sign
-DWN messages on behalf of the grantor via `authorDelegatedGrant` (or
-`ownerDelegatedGrant` on `RecordsWrite`).
+~ A [[ref:Permission Grant]] with `delegated: true`. Its holder signs messages
+*as* the grantor, rather than in its own name.
 
-[[def:ConnectSessionMetadata]]
-~ Bounded session metadata (`id`, `createdAt`, `expiresAt`, optional display
-hints, and `transport`: `"relay" | "postMessage"`) embedded in
-`PermissionGrantData.connectSession` on each user-facing session grant.
-
-[[def:SessionRevocation]]
-~ A `{ grantId, revocationGrantId }` pair linking each user-facing session grant
-to a companion `contextId`-scoped `Records.Write` grant on the Permissions
-Module that lets the [[ref:Client]] self-revoke its session on disconnect.
+[[def:Session]]
+~ The grants issued by one approval. They share an identifier and an expiry.
 
 [[def:Grant Key]]
-~ A persisted decryption/sealing key record stored in the grantor's DWN under
-the built-in Encryption Module (`https://identity.foundation/dwn/modules/encryption`)
-as either an encrypted `grantKey` record (for wallet-minted delegates) or a
-plaintext `wrappedGrantKey` envelope record (for pre-supplied delegates).
+~ A record that gives the holder of a grant a key for reading encrypted
+records. Defined in the DWN specification.
 
 [[def:Owner Authentication Proof]]
-~ A Compact JWS (`typ: "enbox-connect-owner-authentication+jwt"`) signed by an
-active `authentication` verification method of the user's owner `providerDid`,
-proving owner identity bound to an HTTPS `audience`, single-use `challenge`, and
-the SHA-256 digest of the canonical `ConnectRequest`.
+~ A signature by the [[ref:Owner DID]] over a relying service's challenge and
+over the request, proving who approved it. See
+[Owner Authentication Proofs](#owner-authentication-proofs).
 
 [[def:Wallet URI]]
-~ A URI constructed by the [[ref:Client]] for the Relay Transport carrying
-`request_uri` and the 32-byte symmetric `encryption_key` strictly in the URI
-fragment (`#`), presented as a QR code or clickable deep link.
+~ The link, often shown as a QR code, that hands a request to a wallet on the
+Relay Transport. It carries the request's location and its decryption key in
+the URI fragment.
 
 [[def:PIN]]
-~ A short numeric code (**4 zero-padded ASCII decimal digits** in standard
-browser UI for interoperability with `@enbox/browser`'s hardcoded 4-digit modal;
-`CryptoUtils.randomPin` supports 3–10 digits and the HKDF wire binding accepts
-any UTF-8 string) generated by the [[ref:Provider]] on the Relay Transport and
-entered by the user into the [[ref:Client]]. The PIN strengthens the response
-Content Encryption Key (CEK) via HKDF-SHA-256 (`info = "enbox/connect/v2/pin"`),
-providing both confidentiality and integrity protection.
+~ A short numeric code that the [[ref:Wallet]] shows the user on the Relay
+Transport and the user types into the [[ref:Application]]. It is mixed into
+the key that encrypts the response, so a response cannot be opened, or forged,
+without it. A wallet ****SHOULD**** use **4 decimal digits**, zero-padded: that
+is what the reference browser client prompts for. The key derivation itself
+accepts any UTF-8 string.
 
 [[def:DENIED Token]]
-~ The literal string `"DENIED"` (`CONNECT_DENIED_TOKEN`) transmitted in place of
-a sealed response JWE when the user rejects the connect request.
+~ The literal string `DENIED`, sent in place of a response when the user
+refuses the request.
 
 ## Overview
 
-### Actors
+### Request Types
 
-1. **Client (Application / Relying Party)** — Requests delegated DWN module
-   permissions, grant refreshes, and/or owner authentication proofs.
-2. **Provider (Wallet)** — Holds the user's owner DID(s) and root keys.
-   Executes the 5-phase approval ceremony or authentication-only flow.
-3. **Connect Server (Relay)** — Optional untrusted intermediary used on the
-   Relay Transport. Stores single-use encrypted blobs and observational
-   claimed/completed markers for 600 seconds. Not used on the Browser Popup
-   `postMessage` transport.
+A request's `requestType` says what is being asked.
 
-### Handshake Modes (`ConnectRequestType`)
-
-| `requestType` | Purpose | Key Constraints |
+| `requestType` | The wallet | The response |
 |---|---|---|
-| Omitted or `"connect"` | Initial delegated connection (optionally accompanied by an [[ref:Owner Authentication Proof]]) | Returns `ConnectResponse` with `delegateDid`, `delegateGrants`, `sessionRevocations`, optional `delegatePortableDid`, and optional `authenticationProof`. |
-| `"refresh"` | Renew expiring grants for an existing local delegate (optionally accompanied by an [[ref:Owner Authentication Proof]]) | `delegateDid` is ****REQUIRED****; `expectedProviderDid` is optional on the wire (set by `AuthManager.refresh` to pin the owner DID). Provider ****MUST NOT**** mint a new delegate DID or return `delegatePortableDid`. |
-| `"authenticate"` | Owner authentication without delegation | `permissionRequests` ****MUST**** be `[]`; `delegateDid` and `requestedSessionTtlSeconds` ****MUST**** be omitted; `authentication` is ****REQUIRED****. Returns `ConnectAuthenticationResponse` (`responseType: "authentication"`), never creates an `AgentSession` or grants. (Supported by `ConnectClient`, `WalletConnect`, and popup flows; `@enbox/browser`'s `runRelayConnect` / `BrowserConnectHandler` modal relay runner does not support `authenticate`.) |
+| `connect`, or absent | Installs modules and issues grants to a delegate | A [`ConnectResponse`](#connectresponse) |
+| `refresh` | Issues new grants to the delegate named in the request. It ****MUST NOT**** create a delegate | A `ConnectResponse` without `delegatePortableDid` |
+| `authenticate` | Only proves the user's identity. It issues no grants and creates no delegate | A [`ConnectAuthenticationResponse`](#connectauthenticationresponse) |
 
-### Protocol Flows
+A `connect` or `refresh` request may also ask for an
+[[ref:Owner Authentication Proof]], and then receives one together with its
+grants.
 
-**Relay Transport (Cross-Device QR / Same-Device Tab / Deep Link):**
-1. Client generates ephemeral Ed25519 `did:jwk` (`clientDid`), fresh X25519 key
-   pair (`responseKey`), random `nonce` & `state` (16 bytes base64url each), and
-   32-byte symmetric `requestKey`.
-2. Client signs `ConnectRequest` as a `did:jwk` EdDSA JWT, seals it with Compact
-   JWE (`alg: "dir"`, `enc: "XC20P"`, `typ: "enbox-connect-req"`), and pushes it
-   to `POST /connect/par`, receiving `{ request_uri, expires_in: 600 }`.
-3. Client presents the fragment-only [[ref:Wallet URI]]
-   `{walletUri}#request_uri=...&encryption_key=...` (as QR code or link) and
-   polls `GET /connect/token/:state.jwt` (`204` while pending) and optionally
-   `GET /connect/status/:requestId` (`{ claimed }`).
-4. Provider parses fragment parameters, fetches `GET /connect/authorize/:requestId.jwt`
-   (single-use; relay records `claimed`), opens JWE, verifies `did:jwk` JWT,
-   obtains consent, runs the approval or authentication ceremony, generates a
-   [[ref:PIN]], seals `ConnectResponse` / `ConnectAuthenticationResponse` with
-   `alg: "ECDH-ES"` + `enc: "XC20P"` + HKDF-SHA-256 PIN strengthening, and posts
-   `id_token` & `state` to `POST /connect/callback` (or `id_token=DENIED`).
-5. Client retrieves the sealed response from `GET /connect/token/:state.jwt`,
-   prompts for the PIN (`ConnectClient` performs a single attempt; browser
-   `runRelayConnect` allows up to 6 in-memory retries), decrypts & verifies the
-   response (and any owner authentication proof), immediately sends a
-   best-effort `POST /connect/complete` beacon (which the wallet may observe via
-   `GET /connect/complete/:state` to confirm response receipt), and then
-   performs downstream grant validation (`validateConnectResultGrants`) and
-   two-phase local DWN import.
+### The Relay Transport
 
-**Browser Popup `postMessage` Transport (Same-Browser Window):**
-1. Client synchronously opens `https://<wallet-origin>/dweb-connect` inside the
-   user click gesture.
-2. Wallet generates an ephemeral X25519 key pair (`walletEpk`) and posts
-   `{ type: "enbox-connect-loaded", walletEpk, walletOrigin }` to `window.opener`
-   pinned to `dappOrigin`.
-3. Client verifies `event.origin`, `event.source`, `walletEpk`, and
-   `walletOrigin`, seals `ConnectRequest` using `alg: "ECDH-ES"` to `walletEpk`
-   with `apv = base64url(UTF8(walletOrigin))`, and posts
-   `{ type: "enbox-connect-request", jwe }` pinned to `walletOrigin`.
-4. Wallet verifies `event.origin`, `event.source`, `apv`, and
-   `reply.mode === "post_message"`, runs approval/authentication using
-   `verifiedRequesterOrigin = dappOrigin` (no PIN required), seals the response
-   using `alg: "ECDH-ES"` to `request.responseKey` with `apu = base64url(UTF8(state))`,
-   and posts `{ type: "enbox-connect-response", payload }`.
-5. Client decrypts & verifies the response (and any owner authentication proof),
-   immediately sends `{ type: "enbox-connect-ack" }` so the wallet can close
-   cleanly, and then performs downstream grant validation and two-phase local
-   DWN import.
+The wallet may be on another device. The two sides share nothing but a relay
+and what passes between them through the user: a QR code one way, a
+[[ref:PIN]] the other.
 
-## Connect Server (Relay) Endpoints and Discovery
+1. The application creates a throwaway signing DID, a throwaway X25519 key
+   pair for the response, a `nonce`, a `state`, and a random 32-byte key. It
+   signs the request, encrypts it with the key, and stores it on the relay
+   ([`POST /connect/par`](#1-store-a-request-post-connectpar)).
+2. It shows the user a [[ref:Wallet URI]] containing the request's location
+   and the key, and starts polling the relay for a response.
+3. The wallet opens the URI, fetches the request from the relay, decrypts it,
+   and checks its signature. Fetching removes the request from the relay.
+4. The wallet shows the request to the user. If the user approves, it carries
+   the request out (see [Provider Processing](#provider-processing)).
+5. The wallet shows the user a [[ref:PIN]], encrypts the response to the
+   application's key and the PIN together, and stores it on the relay. If the
+   user refuses, it stores `DENIED` instead.
+6. The application collects the response, asks the user for the PIN, and
+   decrypts and verifies the response. It tells the relay that it has, so the
+   wallet can show the user that the connection was made.
 
-All relay state uses a **600-second** (`10`-minute) TTL across 4 key namespaces
-(`request:${requestId}`, `claimed:${requestId}`, `response:${state}`,
-`complete:${state}`), stored in `cacheEntries` (SQL `varchar(512)` primary key),
-with durability awaits before returning `201` and single-use delete awaits
-before returning `200` on `/authorize` and `/token`.
+The PIN ties the response to the wallet the user is looking at. Anyone who
+saw the QR code can read the request, and so learn where a response should
+go; without the PIN, they cannot make one the application will accept.
 
-::: note
-**Relay implementation notes (`dwn-server`)**:
-- `ConnectServer` performs separate non-transactional `SELECT` → `DELETE` (and
-  `INSERT` for `claimed:`) queries via `SqlTtlCache`, so single-use deletion is
-  not transactional/atomic under concurrent requests; `SqlTtlCache.insert` uses
-  a bare `INSERT` with no upsert, so duplicate `POST /connect/callback` or
-  `POST /connect/complete` calls for an existing `state` currently return HTTP
-  `500`. Production relays ****SHOULD**** enforce atomic single-use consumption
-  and handle duplicate keys explicitly.
-- `dwn-server` does not currently emit `Cache-Control: no-store` or
-  `X-Content-Type-Options: nosniff` headers or enforce dedicated `/connect/*`
-  body-size limits, and only `GET /connect/complete/:state` URL-decodes its path
-  segment (`decodeURIComponent`). Relays ****SHOULD**** return
-  `Cache-Control: no-store` and reject oversized payloads or malformed
-  `requestId`/`state` values.
-:::
+### The Popup Transport
 
-### 1. Pushed Authorization Request (`POST /connect/par`)
+When the wallet is a web application in the same browser, no relay is needed.
+The application opens the wallet in a popup, and the two exchange four
+messages with `postMessage`. The browser tells each side the other's origin,
+which stands in for the PIN.
+
+1. The application opens the wallet's page in a popup.
+2. The wallet creates a throwaway X25519 key pair and posts its public key to
+   the window that opened it.
+3. The application encrypts the request to that key and posts it.
+4. The wallet decrypts and verifies the request, shows it to the user, carries
+   it out, and posts the encrypted response, or `DENIED`.
+5. The application decrypts and verifies the response, and posts an
+   acknowledgement so that the wallet can close.
+
+See [Browser Popup `postMessage` Transport](#browser-popup-postmessage-transport).
+
+## The Relay
+
+A [[ref:Relay]] is a small HTTP service with seven routes under one base URL,
+here written `/connect`. A DWN server may host one (see the
+[DWN Transport Protocol](https://dwn-transport-spec.pages.dev)).
+
+It keeps four kinds of entries, each for **600 seconds**: an encrypted
+request, under a request ID it assigns; a note that a request has been
+fetched; an encrypted response, under the request's `state`; and a note that
+a response has been received. It sees nothing but ciphertext, the literal
+`DENIED`, and those two notes.
+
+A relay ****MUST**** store an entry durably before it answers `201`, and
+****MUST**** hand out each request and each response at most once.
+
+A relay ****SHOULD**** also:
+
+- make reading and removing a request or response one atomic step, so that two readers at the same moment cannot both receive it;
+- accept a repeated `POST /connect/callback` or `POST /connect/complete` for the same `state`;
+- reject an empty `request`, `id_token`, or `state`, and a malformed body, with `400`;
+- send `Cache-Control: no-store` on every response; and
+- limit the size of the bodies it accepts.
+
+Its routes allow cross-origin requests from any origin, and are subject to
+the hosting server's rate limits.
+
+### 1. Store a Request (`POST /connect/par`)
+
+Used by the application.
 
 ```http
 POST /connect/par HTTP/1.1
 Content-Type: application/json
 
-{ "request": "<Compact JWE string>" }
+{ "request": "<the encrypted request>" }
 ```
 
-- **201 Created** (`application/json`):
-  ```json
-  {
-    "request_uri": "https://dwn.example/connect/authorize/<uuid-v4>.jwt",
-    "expires_in": 600
+| Response | Body |
+|---|---|
+| `201` | `{ "request_uri": "https://relay.example/connect/authorize/<requestId>.jwt", "expires_in": 600 }` |
+| `400` | `{ "ok": false, "status": { "code": 400, "message": "Bad Request: Missing 'request' parameter" } }` |
+
+`request` is the encrypted request, a string. `request_uri` is where a wallet
+fetches it.
+
+### 2. Fetch a Request (`GET /connect/authorize/:requestId.jwt`)
+
+Used by the wallet.
+
+| Response | Body |
+|---|---|
+| `200` | The encrypted request, with `Content-Type: application/jwt` |
+| `404` | `{ "ok": false, "status": { "code": 404, "message": "Not Found" } }` |
+
+A request can be fetched once. Fetching removes it, and marks it as claimed.
+
+### 3. Ask Whether a Request Was Fetched (`GET /connect/status/:requestId`)
+
+Used by the application, so that it can show that a wallet has picked the
+request up, and stop refreshing its QR code. `requestId` is the last path
+segment of `request_uri`, without the `.jwt` suffix.
+
+Always answers `200`, with `{ "claimed": true }` or `{ "claimed": false }`.
+An unknown or expired request is `false`.
+
+### 4. Store a Response (`POST /connect/callback`)
+
+Used by the wallet. This is the `callbackUrl` of the request's `reply`.
+
+The body is either form-encoded, `id_token=<response>&state=<state>`, or JSON,
+`{ "id_token": "<response>", "state": "<state>" }`. `id_token` is the
+encrypted response, or `DENIED`.
+
+| Response | Body |
+|---|---|
+| `201` | `{ "ok": true, "status": { "code": 201, "message": "Created" } }` |
+| `400` | `{ "ok": false, "status": { "code": 400, "message": "Bad Request" } }` |
+
+### 5. Fetch a Response (`GET /connect/token/:state.jwt`)
+
+Used by the application, which polls it.
+
+| Response | Meaning |
+|---|---|
+| `200` | The body is the encrypted response, or `DENIED`, with `Content-Type: application/jwt`. A response can be fetched once; fetching removes it |
+| `204` | There is no response yet, or it has expired, or it was already fetched |
+
+A relay answers `204`, never `404`, when it has nothing. An application keeps
+polling on `204`, and ****SHOULD**** keep polling on any other unsuccessful
+status too, until its own timeout.
+
+### 6. Report That a Response Was Received (`POST /connect/complete`)
+
+Used by the application, once, as soon as it has opened and verified the
+response. It is best-effort: nothing depends on it but what the wallet shows.
+
+| | |
+|---|---|
+| Request | `{ "state": "<state>" }` |
+| `201` | `{ "ok": true, "status": { "code": 201, "message": "Created" } }` |
+| `400` | `{ "ok": false, "status": { "code": 400, "message": "Bad Request: Missing 'state' parameter" } }` |
+
+### 7. Ask Whether a Response Was Received (`GET /connect/complete/:state`)
+
+Used by the wallet, so that it can show the user that the application is
+connected. Its URL is the request's `callbackUrl` with the last segment
+replaced by `complete/<state>`, the `state` percent-encoded.
+
+Always answers `200`, with `{ "completed": true }` or
+`{ "completed": false }`. The reference wallet polls once a second for up to
+60 seconds.
+
+### Finding a Wallet's Relay
+
+An application needs to know which relay a wallet uses.
+
+**The wallet's well-known document.** A web wallet publishes
+
+```
+GET https://<wallet origin>/.well-known/enbox-connect
+```
+
+```json
+{ "connectServerUrl": "https://relay.example/connect" }
+```
+
+as JSON, readable from any origin. An application ****SHOULD**** fetch it
+with a short timeout (the reference clients use 5 to 6 seconds) and
+****MUST**** accept only an `http:` or `https:` URL.
+
+**The user's wallets.** A DID can publish which web wallets it uses, with the
+module `https://identity.foundation/modules/connect`. It holds at most one
+`wallet` record, readable by anyone, whose data is
+`{ "webWallets": ["https://wallet.example"] }`.
+
+```json
+{
+  "module": "https://identity.foundation/modules/connect",
+  "published": true,
+  "types": {
+    "wallet": {
+      "schema": "https://identity.foundation/schemas/connect/wallet",
+      "dataFormats": ["application/json"]
+    }
+  },
+  "structure": {
+    "wallet": {
+      "$recordLimit": { "max": 1 },
+      "$actions": [ { "who": "anyone", "can": ["read"] } ]
+    }
   }
-  ```
-- **400 Bad Request**:
-  - Missing `request`:
-    ```json
-    { "ok": false, "status": { "code": 400, "message": "Bad Request: Missing 'request' parameter" } }
-    ```
-  - Nested `request.request_uri` present:
-    ```json
-    { "ok": false, "status": { "code": 400, "message": "Bad Request: 'request_uri' parameter is not allowed in PAR" } }
-    ```
-  (Note: malformed JSON bodies on `POST /connect/par` and JSON `POST /connect/callback`
-  currently throw before error translation and return HTTP `500` in `dwn-server`;
-  `POST /connect/complete` catches JSON parse errors and returns `400`.)
+}
+```
 
-### 2. Request Retrieval (`GET /connect/authorize/:requestId.jwt`)
+::: note
+`dwn://connect` is unrelated to this protocol. It is how a desktop
+application announces a local DWN server; see the DWN Transport Protocol.
+:::
 
-- **Side effect on hit**: Deletes `request:${requestId}` (single-use; relays
-  ****SHOULD**** perform this atomically) and records `claimed:${requestId}`
-  (`{ claimedAt }`, TTL 600s).
-- **200 OK** (`Content-Type: application/jwt`): Raw stored Compact JWE string.
-- **404 Not Found**:
-  ```json
-  { "ok": false, "status": { "code": 404, "message": "Not Found" } }
-  ```
-
-### 3. Claimed Status (`GET /connect/status/:requestId`)
-
-Non-consuming observational endpoint allowing the client UI to show that the
-wallet has scanned/fetched the request and stop auto-reminting QR pointers.
-(Clients derive `requestId` from `request_uri` matching
-`/\/connect\/authorize\/([^/]+)\.jwt$/` and resolve `status/${requestId}`
-against `connectServerUrl`.)
-
-- **200 OK** (`application/json`, always `200` even for unknown/expired IDs):
-  ```json
-  { "claimed": true }
-  ```
-  or `{ "claimed": false }` when unclaimed, unknown, or expired.
-
-### 4. Callback Submission (`POST /connect/callback`)
-
-Accepts either `application/x-www-form-urlencoded` (sent by `postRelayResponse`:
-`id_token=<JWE-or-DENIED>&state=<state>`) or `application/json`
-(`{ "id_token": "...", "state": "..." }`).
-
-- **201 Created** (`application/json`):
-  ```json
-  { "ok": true, "status": { "code": 201, "message": "Created" } }
-  ```
-- **400 Bad Request** (missing `id_token` or `state`):
-  ```json
-  { "ok": false, "status": { "code": 400, "message": "Bad Request" } }
-  ```
-  (Note: current `dwn-server` checks `idToken !== undefined && state != undefined`,
-  so empty strings are stored as `""` and later treated as `204` by `/token`;
-  relays ****SHOULD**** reject empty/null `id_token` or `state` with `400`.)
-
-### 5. Token Retrieval (`GET /connect/token/:state.jwt`)
-
-- **When ready**: Deletes `response:${state}` (single-use; relays ****SHOULD****
-  perform this atomically) and returns **`200 OK`** (`Content-Type: application/jwt`)
-  with the raw sealed JWE string or literal `"DENIED"`.
-- **When pending, expired, or already consumed**: Returns
-  **`204 No Content`** with an empty body (never `404`). `RelayClientTransport.pollToken`
-  treats any non-2xx HTTP status (including `404`, `429`, `5xx`) or empty 2xx
-  body as pending and continues polling until `timeoutMs`.
-
-### 6. Completion Beacon (`POST /connect/complete`)
-
-Best-effort client signal (`keepalive: true`) sent immediately after
-successfully opening and verifying the response envelope (before downstream
-grant validation and local DWN import).
-
-- **Request** (`application/json`): `{ "state": "<state>" }`
-- **201 Created**: `{ "ok": true, "status": { "code": 201, "message": "Created" } }`
-- **400 Bad Request**: `{ "ok": false, "status": { "code": 400, "message": "Bad Request: Missing 'state' parameter" } }`
-
-### 7. Completion Poll (`GET /connect/complete/:state`)
-
-Non-consuming observational endpoint polled by the wallet (`pollRelayComplete`,
-resolved relative to `callbackUrl` as `complete/${encodeURIComponent(state)}`,
-default 1s interval, 60s timeout; short-circuits to `false` on HTTP `404`) to
-transition its pairing UI to "connected".
-
-- **200 OK** (`application/json`, always `200` even for unknown/expired states):
-  ```json
-  { "completed": true }
-  ```
-  or `{ "completed": false }` when not yet completed, unknown, or expired.
-
-### CORS, Rate Limiting, and Local-Node Isolation
-
-- Standard public relay routes return CORS headers:
-  `Access-Control-Allow-Origin: *`, `Access-Control-Allow-Methods: GET, POST, OPTIONS`,
-  `Access-Control-Allow-Headers: *`, `Access-Control-Expose-Headers: dwn-response`,
-  `Access-Control-Max-Age: 86400`; `OPTIONS` returns `204`.
-- Server-level per-IP rate limiting applies (default `30 req/s`, burst `50`,
-  evaluated prior to `OPTIONS` preflight handling; returns `429 Too Many Requests`,
-  `Retry-After`, `{"error":"Rate limit exceeded"}`).
-- When the host `dwn-server` runs under the Local Node Profile, `/connect/*`
-  routes are protected by local-node bearer authentication and origin pairing.
-
-### Wallet and Relay Discovery
-
-1. **Well-Known Wallet Document (`GET https://<wallet-origin>/.well-known/enbox-connect`)**:
-   Advertises the wallet's relay endpoint (`Content-Type: application/json`;
-   browser deployments require CORS `Access-Control-Allow-Origin: *`, and
-   production endpoints ****SHOULD**** use `https:` — `http:` only for local
-   development/loopback):
-   ```json
-   {
-     "connectServerUrl": "https://dwn.example/connect"
-   }
-   ```
-   (`@enbox/browser` fetches with a 6-second timeout and caches results per modal
-   session; `@enbox/cli` uses a 5-second timeout and validates/normalizes to
-   `http:`/`https:`.)
-2. **Connect DWN Module (`https://identity.foundation/modules/connect`)**:
-   A published DWN module (`@enbox/modules`) allowing a DID to advertise its
-   associated web wallets (`published: true`, type `wallet` with
-   `schema: "https://identity.foundation/schemas/connect/wallet"`,
-   `dataFormats: ["application/json"]`, `$recordLimit: { "max": 1 }`,
-   `who: "anyone", can: ["read"]`, payload
-   `{ "webWallets": ["https://wallet.example"] }`).
-3. **Note on `dwn://connect`**: `dwn://connect?callback=<url>` is a separate
-   local-DWN endpoint discovery scheme for desktop apps (see the DWN Transport
-   Protocol specification), not an Enbox Connect wallet URI.
-
-## Wire Request and Response Objects
+## Requests and Responses
 
 ### `ConnectRequest`
 
@@ -429,23 +396,34 @@ transition its pairing UI to "connected".
 }
 ```
 
-- `clientDid` — ****REQUIRED****. Ephemeral `did:jwk` (Ed25519); ****MUST**** equal the inner JWT signer DID. When `authentication` is present, must parse via `Did.parse` with `method === "jwk"` and no path, query, or fragment.
-- `appName` — ****REQUIRED**** (`1..256` chars when `authentication` is present).
-- `appIcon`, `applicationId`, `clientMetadata` — ****OPTIONAL**** self-reported display hints.
-- `authentication` — ****OPTIONAL**** (REQUIRED when `requestType === "authenticate"`; also permitted on `"connect"` and `"refresh"`). Exact keys `["version", "audience", "challenge"]`: `version === 1`, `audience` is a canonical `https:` URL (`audience === parsed.href || audience === parsed.origin`, `<= 2048` chars, no userinfo/query/hash), `challenge` matches `/^[A-Za-z0-9_-]{22,128}$/`.
-- `permissionRequests` — ****REQUIRED**** array of `{ moduleDefinition, permissionScopes }` (strictly 2 keys; `moduleDefinition` validated with `requireKeyAgreement: false`, each scope validated against `PermissionScope` JSON schema; must be `[]` when `requestType === "authenticate"`, max 32 entries when `authentication` is present).
-- `requestedSessionTtlSeconds` — ****OPTIONAL**** advisory session lifetime in seconds (forbidden for `authenticate`; must be finite and floor to `>= 1` whole second).
-- `delegateDid` — ****OPTIONAL**** pre-supplied delegate DID URI (REQUIRED for `refresh`, forbidden for `authenticate`).
-- `requestType` — ****OPTIONAL**** (`"connect" | "refresh" | "authenticate"`).
-- `expectedProviderDid` — ****OPTIONAL**** owner DID pin (set by `AuthManager.refresh` on refresh/reconnect, though optional on the wire).
-- `supportedDidMethods` — ****REQUIRED**** `string[]` (default `["did:dht", "did:jwk"]`; when `authentication` is present, `1..8` unique entries each matching `/^did:[a-z0-9]+$/`).
-- `nonce`, `state` — ****REQUIRED**** 16-byte cryptographically random `base64url` strings (validated against `/^[A-Za-z0-9_-]{22,128}$/` when `authentication` is present).
-- `responseKey` — ****REQUIRED**** fresh public-only X25519 JWK (`{ kty: "OKP", crv: "X25519", x }`, no `d`).
-- `reply` — ****REQUIRED****: `{ mode: "direct_post", callbackUrl }` (relay; `callbackUrl` `1..2048` chars when `authentication` is present) or `{ mode: "post_message" }` (popup).
+- `clientDid` — ****REQUIRED****. A `did:jwk` with an Ed25519 key, created for this request. It ****MUST**** be the signer of the inner JWT.
+- `appName` — ****REQUIRED****. A display name.
+- `appIcon`, `applicationId`, `clientMetadata` — ****OPTIONAL****. Self-reported display hints. A wallet ****MUST NOT**** treat them as verified.
+- `authentication` — ****OPTIONAL****; ****REQUIRED**** when `requestType` is `"authenticate"`. Asks for an [[ref:Owner Authentication Proof]]. An object with exactly:
+  - `version` — the number `1`.
+  - `audience` — an `https:` URL of at most 2048 characters with no user information, query, or fragment, written in its normalized form (either the bare origin, or the form a URL parser serializes it to).
+  - `challenge` — 22 to 128 base64url characters, issued by the relying service for one use.
+- `permissionRequests` — ****REQUIRED****. An array of `{ moduleDefinition, permissionScopes }` objects with no other properties. `moduleDefinition` is a DWN module definition; `permissionScopes` is an array of DWN permission scopes for that module (see [Permission Model](#permission-model)). It is `[]` when `requestType` is `"authenticate"`.
+- `requestedSessionTtlSeconds` — ****OPTIONAL****. The grant lifetime the application would like, in seconds. Advisory. It is rounded down and ****MUST**** come to at least 1. Not allowed with `"authenticate"`.
+- `delegateDid` — ****OPTIONAL****. A DID the application already controls and wants the grants issued to. ****REQUIRED**** for `"refresh"`; not allowed with `"authenticate"`.
+- `requestType` — ****OPTIONAL****. `"connect"` (the default), `"refresh"`, or `"authenticate"`.
+- `expectedProviderDid` — ****OPTIONAL****. The owner DID the application expects. A wallet ****MUST**** refuse to answer as any other DID.
+- `supportedDidMethods` — ****REQUIRED****. The DID methods the application accepts for the owner DID, such as `["did:dht", "did:jwk"]`.
+- `nonce`, `state` — ****REQUIRED****. Random strings; the reference client uses 16 random bytes, base64url-encoded. The response echoes both. `state` also names the response on the relay.
+- `responseKey` — ****REQUIRED****. A fresh X25519 public key, as a JWK with no private part. The response is encrypted to it.
+- `reply` — ****REQUIRED****. `{ "mode": "direct_post", "callbackUrl": "<url>" }` on the Relay Transport, or `{ "mode": "post_message" }` on the popup transport.
 
-### `ConnectResponse` (Delegation Response)
+A request that contains `authentication` is validated more strictly, because
+the proof covers the whole request: `appName` is 1 to 256 characters; `nonce`
+and `state` are 22 to 128 base64url characters; `permissionRequests` has at
+most 32 entries; `supportedDidMethods` has 1 to 8 distinct entries of the form
+`did:<method>`; `callbackUrl`, when present, is 1 to 2048 characters; and the
+request in canonical form is at most 262,144 bytes (see
+[Owner Authentication Proofs](#owner-authentication-proofs)).
 
-MUST NOT include `responseType`:
+### `ConnectResponse`
+
+A delegation response ****MUST NOT**** contain `responseType`.
 
 ```json
 {
@@ -465,13 +443,17 @@ MUST NOT include `responseType`:
 }
 ```
 
-- `exp` = `iat + 600` (`CONNECT_RESPONSE_TTL_SECONDS = 600`).
-- `delegatePortableDid` is present **iff** the wallet minted the delegate DID (containing both its Ed25519 private key and derived X25519 private key); it is **omitted** when `request.delegateDid` was pre-supplied.
-- `delegateGrants` contains all data-encoded `RecordsWrite` messages for both session grants and companion self-revocation grants.
+- `exp` is `iat + 600`.
+- `delegateDid` is the DID the grants were issued to. When the request supplied `delegateDid`, it ****MUST**** be that DID.
+- `delegatePortableDid` is present exactly when the wallet created the delegate DID. It is the delegate's DID document and private keys: its Ed25519 signing key and the X25519 key derived from it. It ****MUST**** be absent when the request supplied `delegateDid`.
+- `delegateGrants` contains every grant issued, as `RecordsWrite` messages with their data in `encodedData`: the session grants and their companion revocation grants.
+- `sessionRevocations` pairs each session grant with its revocation grant (see [Provider Processing](#provider-processing)).
+- `authenticationProof` is present exactly when the request contained `authentication`.
 
-### `ConnectAuthenticationResponse` (Authentication-Only Response)
+### `ConnectAuthenticationResponse`
 
-Enforces strictly these 8 keys (delegation fields are forbidden):
+An authentication-only response has exactly these eight properties, and no
+delegation properties:
 
 ```json
 {
@@ -488,118 +470,152 @@ Enforces strictly these 8 keys (delegation fields are forbidden):
 
 ## Cryptography
 
-### Inner JWT Signing (`did:jwk`-Pinned EdDSA)
+A request or response is protected twice. It is first **signed**, as a JWT, so
+that its recipient knows it was not altered. The JWT is then **encrypted**, as
+a JWE, so that nobody else can read it.
 
-Both `ConnectRequest` and `ConnectResponse` / `ConnectAuthenticationResponse`
-are first signed as Compact JWS tokens (`packages/connect/src/jwt.ts`, using
-standard `JSON.stringify`):
-- Protected header: `{ "alg": "EdDSA", "kid": "<did:jwk:...>#0", "typ": "JWT" }`.
-- Signature: Ed25519 over ASCII `b64u(header) + "." + b64u(payload)`.
-- **Verification pinning**: `verifyJwt()` requires `alg === "EdDSA"`,
-  `kid` beginning with **`did:jwk:`**, and resolved `method.id === header.kid`
-  (pure local key decoding, zero network I/O; `verifyJwt` does not enforce
-  `header.typ`). Request opening enforces `signerDid === payload.clientDid`.
-  Response signing uses the minted delegate `did:jwk` or a fresh ephemeral
-  `did:jwk` (for pre-supplied delegates and authentication-only responses).
+### Signing
 
-### Outer Compact JWE Envelopes (`XC20P` + Mandatory Allow-Lists)
+The payload is signed as a compact JWS ([[spec:RFC7515]]) with the header
 
-All Enbox Connect envelopes use standard 5-part [[spec:RFC7516]] Compact JWE
-with content encryption **`enc: "XC20P"`** (XChaCha20-Poly1305, 256-bit CEK,
-24-byte random IV, 16-byte auth tag, empty encrypted-key segment `""`, AAD =
-ASCII `b64u(protectedHeader)`).
+```json
+{ "alg": "EdDSA", "kid": "<did:jwk>#0", "typ": "JWT" }
+```
 
-Decryption ****MUST**** enforce explicit algorithm allow-lists before key
-management executes:
-- Relay request: `allowedAlgs: ["dir"]`, `allowedEncs: ["XC20P"]`.
-- Popup request: `allowedAlgs: ["ECDH-ES"]`, `allowedEncs: ["XC20P"]`.
-- All responses: `allowedAlgs: ["ECDH-ES"]`, `allowedEncs: ["XC20P"]`.
+- The signer is always a `did:jwk` with an Ed25519 key. A verifier
+  ****MUST**** require `alg` to be `EdDSA` and `kid` to name a `did:jwk`, and
+  takes the public key from the DID itself. Nothing is resolved over a
+  network.
+- A **request** is signed by the DID in its `clientDid`. A wallet ****MUST****
+  reject a request whose signer is any other.
+- A **response** is signed by the delegate, when the wallet created it; and
+  otherwise by a `did:jwk` that the wallet creates for the one response.
 
-#### Request Sealing
+The signature on a response shows only that the response is intact. It is not
+by the [[ref:Owner DID]], and proves nothing about who approved the request.
+What makes a response trustworthy is how it is encrypted, described next.
+When an application needs proof of who approved, it asks for an
+[[ref:Owner Authentication Proof]].
 
-1. **Relay Transport (`mode: "dir"`)**:
-   - Protected header: `{ "alg": "dir", "cty": "JWT", "enc": "XC20P", "typ": "enbox-connect-req" }`.
-   - Encrypted directly with the random 32-byte `requestKey` carried only in the
-     [[ref:Wallet URI]] fragment.
-2. **Popup Transport (`mode: "ecdh-es"`)**:
-   - Protected header:
-     ```json
-     {
-       "alg": "ECDH-ES",
-       "apv": "<base64url(UTF8(walletOrigin))>",
-       "cty": "JWT",
-       "enc": "XC20P",
-       "typ": "enbox-connect-req",
-       "epk": { "kty": "OKP", "crv": "X25519", "x": "<base64url>" }
-     }
-     ```
-   - Computes X25519 shared secret `Z` to `walletEpk` (rejecting all-zero
-     low-order outputs and same-keypair inputs), then derives CEK via
-     [[spec:RFC7518]] §4.6.2 Concat KDF SHA-256 with empty `PartyUInfo`
-     (`uint32be(0)`) and `PartyVInfo = uint32be(len(UTF8(walletOrigin))) || UTF8(walletOrigin)`.
-     Wallet verifies `typ`, `cty`, and `apv === base64url(UTF8(walletOrigin))`.
+### Encryption
 
-#### Response Sealing (`ECDH-ES` + HKDF-SHA-256 PIN Strengthening)
+Every envelope is a compact JWE ([[spec:RFC7516]]) whose content is encrypted
+with XChaCha20-Poly1305, `"enc": "XC20P"`:
 
-Responses use dedicated X25519 keys (`epk` generated fresh by the wallet,
-paired with `request.responseKey` — **no** `kid` header and **no**
-Ed25519→X25519 envelope conversion):
+- a 256-bit content encryption key;
+- a random 24-byte nonce, in the JWE's initialization vector;
+- a 16-byte authentication tag;
+- the ASCII bytes of the encoded protected header as additional authenticated
+  data; and
+- an empty encrypted-key part, since no key is wrapped.
 
-1. **Protected Header**:
-   ```json
-   {
-     "alg": "ECDH-ES",
-     "apu": "<base64url(UTF8(request.state))>",
-     "cty": "JWT",
-     "enc": "XC20P",
-     "typ": "enbox-connect-res",
-     "epk": { "kty": "OKP", "crv": "X25519", "x": "<base64url>" }
-   }
-   ```
-2. **X25519 Key Agreement with Low-Order Point Rejection**:
-   Compute `Z = X25519(ephemeralPrivate, request.responseKey)` (or
-   `X25519(responsePrivateKey, epk)` on decrypt). Same-keypair inputs and any
-   all-zero output `Z` ****MUST**** fail immediately.
-3. **Concat KDF ([[spec:RFC7518]] §4.6.2, SHA-256)**:
-   ```
-   cek = SHA-256(
-     0x00000001 || Z ||
-     (uint32be(5) || UTF8("XC20P")) ||
-     (uint32be(len(UTF8(state))) || UTF8(state)) ||
-     uint32be(0) ||
-     uint32be(256)
-   )
-   ```
-4. **PIN CEK Strengthening (Relay Transport only — NOT AAD)**:
-   When a [[ref:PIN]] is present, strengthen `cek` via [[spec:RFC5869]]
-   HKDF-SHA-256:
-   ```
-   cek = HKDF-SHA-256(
-     ikm    = cek,
-     salt   = UTF8(pin),
-     info   = UTF8("enbox/connect/v2/pin"),
-     length = 256 bits (32 bytes)
-   )
-   ```
-   The PIN is never placed in AAD; an incorrect PIN derives a completely
-   different 256-bit CEK and fails AEAD tag verification.
-5. **Context Verification**: On open, the client verifies `typ === "enbox-connect-res"`,
-   `cty === "JWT"`, `apu === base64url(UTF8(expected.state))`, inner `did:jwk`
-   EdDSA JWT, `payload.aud === expected.clientDid`, `payload.nonce === expected.nonce`,
-   `payload.state === expected.state`, optional `expectedProviderDid`,
-   `payload.exp > payload.iat`, `payload.iat <= now + 60`, and `now < payload.exp`.
-   (Note: `assertConnectResponse` does not enforce `exp - iat <= 600` on open.)
+The header always has `"cty": "JWT"`, and a `typ` of `enbox-connect-req` for a
+request or `enbox-connect-res` for a response.
+
+How the content encryption key is agreed depends on the envelope:
+
+| Envelope | `alg` | The key is |
+|---|---|---|
+| Request on the Relay Transport | `dir` | The random 32-byte key in the [[ref:Wallet URI]] |
+| Request on the popup transport | `ECDH-ES` | Derived from the wallet's X25519 key, and bound to the wallet's origin |
+| Any response | `ECDH-ES` | Derived from the request's `responseKey`, bound to the request's `state`, and on the Relay Transport to the [[ref:PIN]] |
+
+A recipient ****MUST**** check, before anything else, that `alg` and `enc` are
+exactly the ones this table gives for the envelope it expects, and that `typ`
+and `cty` are as stated. It ****MUST**** reject any other envelope.
+
+#### Deriving a Key with `ECDH-ES`
+
+The sender creates a fresh X25519 key pair for the one envelope, and puts the
+public key in the header as `epk`. Both sides compute the X25519 shared
+secret `Z`, the sender from its private key and the recipient's public key,
+the recipient from its private key and `epk`.
+
+An implementation ****MUST**** reject a `Z` that is all zeros, which is what a
+malicious public key of low order produces. It ****MUST**** also refuse to
+combine the two halves of the same key pair.
+
+The key is then derived with the Concat KDF of [[spec:RFC7518]], section
+4.6.2:
+
+```
+key = SHA-256(
+  0x00000001 || Z ||
+  uint32be(5) || "XC20P" ||
+  uint32be(len(apu)) || apu ||
+  uint32be(len(apv)) || apv ||
+  uint32be(256)
+)
+```
+
+`apu` and `apv` here are the *decoded* bytes of the header parameters of the
+same names. An absent parameter is the empty string, and contributes only
+`uint32be(0)`.
+
+- **A popup request** has `apv`, the base64url encoding of the wallet's
+  origin (for example `https://wallet.example`), and no `apu`. The wallet
+  ****MUST**** check that `apv` is its own origin. A request encrypted for one
+  wallet is thereby useless to another.
+- **A response** has `apu`, the base64url encoding of the request's `state`,
+  and no `apv`. The application ****MUST**** check that `apu` is the `state`
+  it sent.
+
+```json
+{
+  "alg": "ECDH-ES",
+  "enc": "XC20P",
+  "typ": "enbox-connect-res",
+  "cty": "JWT",
+  "apu": "<base64url of the state>",
+  "epk": { "kty": "OKP", "crv": "X25519", "x": "<base64url>" }
+}
+```
+
+#### Adding the PIN
+
+On the Relay Transport, the key of a response is passed once more through
+HKDF-SHA-256 ([[spec:RFC5869]]), with the [[ref:PIN]] as salt:
+
+```
+key = HKDF-SHA-256(
+  ikm    = key,
+  salt   = UTF8(pin),
+  info   = UTF8("enbox/connect/v2/pin"),
+  length = 32 bytes
+)
+```
+
+The PIN appears nowhere in the envelope. A recipient with the wrong PIN
+derives a different key, and decryption fails. On the popup transport there
+is no PIN and this step is skipped.
+
+#### Checking a Response
+
+Having decrypted a response and verified its signature, an application
+****MUST**** check that:
+
+- `aud` is the `clientDid` of its request;
+- `nonce` and `state` are those of its request;
+- `providerDid` is the `expectedProviderDid` of its request, if it set one; and
+- `exp` is later than `iat`, `iat` is no more than 60 seconds in the future,
+  and `exp` has not passed.
 
 ## Owner Authentication Proofs
 
-When `request.authentication` is present (in `connect`, `refresh`, or
-`authenticate` mode), the wallet produces an [[ref:Owner Authentication Proof]]
-proving control of the user's owner DID (`providerDid`) bound to the exact
-untouched `ConnectRequest`.
+When a request contains `authentication`, whatever its `requestType`, the
+wallet answers with an [[ref:Owner Authentication Proof]]: a signature by the
+owner DID itself, over the relying service's challenge and over the request
+exactly as the client sent it.
+
+The delegate credentials of a `connect` response show what an application may
+do. They do not prove who approved it, because the response is not signed by
+the owner DID. A service that signs users in needs the proof.
 
 ### Proof Compact JWS Format
 
-- **Protected Header** (exact 3 keys `["alg", "kid", "typ"]`, canonical JSON):
+A proof is a Compact JWS.
+
+- **Protected header**, with exactly these three properties:
   ```json
   {
     "alg": "EdDSA",
@@ -607,8 +623,10 @@ untouched `ConnectRequest`.
     "typ": "enbox-connect-owner-authentication+jwt"
   }
   ```
-  Supported `(alg, curve, signature length)` tuples: `EdDSA` (`OKP`/`Ed25519`, 64 bytes), `ES256K` (`EC`/`secp256k1`, raw 64-byte `R || S`), `ES256` (`EC`/`P-256`, raw 64-byte `R || S`).
-- **Payload** (exact 8 keys, canonical JSON):
+  `alg` follows from the signing key: `EdDSA` for Ed25519, `ES256K` for
+  secp256k1, `ES256` for P-256. The signature is always 64 bytes; for the two
+  ECDSA algorithms it is `R || S`.
+- **Payload**, with exactly these eight properties:
   ```json
   {
     "iss": "<providerDid>",
@@ -621,333 +639,472 @@ untouched `ConnectRequest`.
     "exp": 1700000300
   }
   ```
-- **Canonical JSON & Constants**: `exp = iat + 300` (max age `300s`), clock skew
-  `30s`, max canonical request `262,144` bytes (256 KiB, max depth `32`), max
-  proof `16,384` bytes (16 KiB). `canonical()` produces compact JSON (no
-  whitespace) using ES2019 well-formed `JSON.stringify` for strings/keys
-  (escaping lone UTF-16 surrogates prior to UTF-8 encoding), finite numbers only
-  (rejecting `NaN`/`Infinity`), plain objects only (omitting `undefined`
-  properties and sorting keys by UTF-16 code units), and rejecting `undefined`
-  array elements or non-plain objects (`Date`, `RegExp`, `Map`, `Set`).
+- **Serialization**: the header and the payload are each written in the
+  canonical form described below, then base64url-encoded. The signature is
+  over the ASCII string `<header>.<payload>`.
+- **Lifetime and size**: a wallet sets `exp` to `iat + 300`. A verifier rejects
+  a proof whose `exp` is not later than its `iat`, whose lifetime (`exp - iat`)
+  exceeds 300 seconds, whose `iat` is more than 30 seconds in the future, or
+  whose `exp` has passed. A proof is at most `16,384` characters.
+- **`request_hash`** is computed over the *canonical form* of the request
+  exactly as the client created it: compact JSON with no whitespace, object keys
+  sorted by UTF-16 code unit, strings escaped as ECMAScript `JSON.stringify`
+  escapes them (a lone surrogate becomes a `\uXXXX` escape), and absent
+  properties omitted. Only objects, arrays, strings, finite numbers, booleans,
+  and `null` can be canonicalized. The canonical request is at most `262,144`
+  bytes and at most 32 levels deep.
 
-### Wallet and Verifier Invariants
+### Wallet and Verifier Requirements
 
-- **Wallet invariants**:
-  - Requires `verifiedRequesterOrigin` (from popup `event.origin` or
-    service-owned relay policy; ****MUST**** be `https:`, even in local
-    development) matching `new URL(request.authentication.audience).origin`.
-  - `providerDid` ****MUST**** be a locally owned identity (delegates rejected).
-  - Signing key ****MUST**** be uniquely listed in `didDocument.authentication`
-    (both `authentication` and `verificationMethod` capped at 64 entries;
-    relative `#fragment` references are expanded to `<providerDid>#<fragment>`)
-    with `controller === providerDid` and signed via KMS without exporting owner
-    private keys.
-  - Key selection & validation are prepared before side effects, while signing
-    is deferred until the end of the approval ceremony so setup time does not
-    consume the 300-second proof TTL.
-- **Verifier invariants (`verifyOwnerAuthenticationProof`)**:
-  - Fixed opaque error codes: `invalid-request`, `invalid-proof`,
-    `unsupported-key`, `invalid-signature`, `context-mismatch`, `expired-proof`,
-    `did-resolution`, `replayed-proof`.
-  - Requires all 3 Compact JWS segments to match unpadded `/^[A-Za-z0-9_-]+$/`,
-    `header.kid <= 2048` chars matching `<providerDid>#<non-empty-fragment>`,
-    public-only `publicKeyJwk` (with `publicKeyJwk.alg` matching the signing
-    algorithm if present), and `providerDid` syntax (no path/query/fragment,
-    `<= 2048` chars, `!== clientDid`, `!== delegateDid`, in
-    `supportedDidMethods`, matches `expectedProviderDid` if set).
-  - Resolves `providerDid` freshly (rejecting deactivated DIDs) and checks the
-    300s/30s time window **three times** (before DID resolution, after signature
-    verification before replay consumption, and after replay consumption).
-  - Supports an optional `replayStore` (`ConnectAuthenticationReplayStore`):
-    browser-side `ConnectClient` invokes `verifyOwnerAuthenticationProof`
-    **without** `replayStore` (producing cryptographic verification only).
-    Relying services ****MUST**** perform durable, atomic transaction-keyed
-    `(audience, challenge)` consumption server-side (either by passing
-    `replayStore` to `verifyOwnerAuthenticationProof` or atomically consuming
-    the challenge when issuing an account session) before accepting
-    authentication.
-  - `ConnectClient` invokes `onAuthenticationRequest(clone(request))` **before**
-    transmitting the request so the relying service durably binds the exact
-    request; omitting a requested proof or returning an unsolicited proof fails
-    closed.
+A **wallet** that produces a proof:
 
-## Provider Processing (5-Phase Approval Ceremony)
+- ****MUST**** know the origin of the requester by its own means, not from the
+  request: from the browser, on the popup transport, or from the relying
+  service's own policy, on the relay transport. That origin ****MUST**** be
+  `https:` and ****MUST**** equal the origin of `request.authentication.audience`.
+- ****MUST**** sign as an identity it owns. A delegate cannot produce a proof.
+- ****MUST**** sign with a key that the owner DID's document lists under
+  `authentication`, exactly once, and whose `controller` is the owner DID. A
+  relative reference such as `#key-1` is read as `<providerDid>#key-1`. A
+  document with more than 64 `authentication` or `verificationMethod` entries
+  is refused.
+- ****SHOULD**** choose and check the key before it changes anything, but sign
+  only at the end of the approval, so that the time the approval takes does
+  not eat into the proof's 300 seconds.
 
-For `connect` and `refresh` requests, the wallet runs preflight validation and
-then executes 5 progress phases (`delegate`, `modules`, `permission-grants`,
-`grant-keys`, `revocations`) identically across transports (with a 10-second
-`CONNECT_DID_RESOLUTION_TIMEOUT_MS` on DID resolution and fail-closed rejection
-if zero remote DWN endpoints resolve or respond):
+A **verifier**:
 
-**Preflight & Auth Preparation**: Validates `permissionRequests` (schema
-validation, every scope's `scope.module === moduleDefinition.module`, no
-duplicate or non-normalized module URIs, finite TTL flooring to `>= 1` second,
-rejecting `Records.Query`/`Subscribe`/`Count`), `expectedProviderDid`, and
-`verifiedRequesterOrigin`; prepares owner authentication key if requested.
-(Note: in current `enbox`, `Modules.Configure` passes preflight schema
-validation and is rejected by `assertConnectGrantScope` during Phase 3
-`permission-grants`; implementations ****SHOULD**** reject `Modules.Configure`
-in preflight prior to any DWN mutations.)
+- ****MUST**** check that each of the three parts of the proof is unpadded
+  base64url; that `kid` is at most 2048 characters and has the form
+  `<providerDid>#<fragment>`; and that `providerDid` is a bare DID of at most
+  2048 characters, differs from `clientDid` and from `delegateDid`, uses one of
+  the request's `supportedDidMethods`, and equals `expectedProviderDid` when
+  the request set one.
+- ****MUST**** resolve `providerDid` afresh, refuse a deactivated DID, and take a
+  public key from a verification method listed under `authentication`. If the
+  key has an `alg`, it ****MUST**** match the proof's.
+- ****MUST**** check that `iss` and `sub` are `providerDid`; that `aud`, `nonce`,
+  and `request_hash` match the request it issued; and that `purpose` is
+  `enbox-connect-authentication`.
+- ****MUST**** check the time window, and check it again immediately before it
+  accepts the proof, since resolving the DID takes time.
+- ****MUST****, if it is a relying service, consume each `(audience, challenge)`
+  pair durably and atomically, so that a proof is accepted once. A client
+  running in a browser can verify a proof cryptographically but cannot provide
+  this guarantee; the service the user is signing in to has to.
+- reports failure as one of: `invalid-request`, `invalid-proof`,
+  `unsupported-key`, `invalid-signature`, `context-mismatch`, `expired-proof`,
+  `did-resolution`, `replayed-proof`.
 
-1. **Delegate Resolution (`delegate`)**:
-   - *Wallet-minted (`request.delegateDid` absent)*: Mints a fresh Ed25519
-     `did:jwk`, derives and appends its X25519 private key to
-     `delegatePortableDid.privateKeys` (required for DWN encryption), and uses
-     it as `responseSigner`.
-   - *Pre-supplied (`request.delegateDid` present)*: Validates DID URI syntax,
-     omits `delegatePortableDid`, mints an ephemeral `did:jwk` solely as
-     `responseSigner`, and resolves the pre-supplied delegate's root X25519
-     public key whenever any requested module requires key agreement and
-     includes a `Records.Read` scope.
-2. **Module Preparation (`modules`)**:
-   - Rejects requester-supplied `$keyAgreement` / `$encryption` metadata (keys
-     are always wallet-derived).
-   - Resolves `uses` dependency composition plan (including zero-scope
-     `installationOnly` dependencies and depth-first propagation of locally
-     installed out-of-batch `uses` dependencies missing on remotes), verifies
-     installed `$keyAgreement` public keys by JWK thumbprint (rejecting foreign
-     keys as non-overridable conflicts, and rejecting conflicting authored
-     definitions unless explicitly owner-approved via `approvedModuleOverrides`),
-     configures modules in topological `uses`-dependency order locally and
-     across remote endpoints (concurrency 8, 10s per-request timeout), and
-     **fail-closed re-queries** changed endpoints to verify convergence.
-3. **Permission Grants (`permission-grants`)**:
-   - Rejects `Modules.Configure` scopes (`assertConnectGrantScope`).
-   - Builds `ConnectSessionMetadata` (required `id` <= 128, `createdAt`,
-     `expiresAt`; optional `applicationId` <= 512, `appName` <= 128,
-     `appIcon` <= 2048, `origin` <= 512, `userAgent` <= 512, `platform` <= 128,
-     `language` <= 64, `languages` <= 16 items of <= 64 chars, `timezone` <= 128,
-     `transport`: `"relay" | "postMessage"`; clamped to `PermissionGrantData`
-     schema limits, with `origin` overridden by `verifiedRequesterOrigin` on any
-     transport supplying it).
-   - Computes grant TTL: default **`3600` seconds (1 hour)**, hard maximum
-     **`7,776,000` seconds (90 days)**; provider override takes precedence over
-     advisory `requestedSessionTtlSeconds`.
-   - Creates grants locally and fans out to remote endpoints (10s per request,
-     20s batch budget); **fail-closed** — every grant must be accepted (`202` or
-     `409`) by at least one remote endpoint.
-4. **Encryption Grant Keys (`grant-keys`)**:
-   - Module gate: triggered whenever a module requires key agreement
-     (`Modules.requiresKeyAgreement`) and the request includes at least one
-     `Records.Read` scope for that module (a module requesting only
-     `Records.Write` without `Records.Read` does not trigger connect grant-key
-     issuance).
-   - Once triggered, `createGrantKeyRecordsForGrants` writes immutable records
-     to the owner's DWN under `https://identity.foundation/dwn/modules/encryption`
-     for every eligible **non-`contextId`-scoped** `Records.Read` grant (module/path
-     keys plus local read-referenced `$role` paths) **and** `Records.Write` grant
-     (covered local `$role` paths carrying `$keyAgreement`):
-     - Wallet-minted delegate → DWN-encrypted `grantKey` record (encrypted to
-       grantee's derived `["modulePath", "https://identity.foundation/dwn/modules/encryption", "grantKey"]` key).
-     - Pre-supplied delegate → plaintext `wrappedGrantKey` record carrying an
-       `enbox/wrapped-grant-key@1` envelope wrapped to the delegate's root
-       X25519 public key.
-   - Fail-closed fan-out: every record must be accepted (`202` or `409`) by at
-     least one remote endpoint.
-5. **Per-Grant Self-Revocation Grants (`revocations`)**:
-   - For each user-facing session grant, creates a companion `delegated: true`
-     grant (same `dateExpires`, no `connectSession` metadata) with scope:
-     ```json
-     {
-       "interface": "Records",
-       "method": "Write",
-       "module": "https://identity.foundation/dwn/permissions",
-       "contextId": "<session-grant-recordId>"
-     }
-     ```
-   - Best-effort remote fan-out; included in `delegateGrants` and paired in
-     `sessionRevocations`.
+A client that asks for a proof ****MUST**** give the exact request to the
+relying service *before* sending it to the wallet, so that the service can
+later recompute `request_hash`. A response that lacks a proof that was asked
+for, or carries one that was not, ****MUST**** be rejected.
+
+## Provider Processing
+
+This section defines what a wallet does with a `connect` or `refresh` request
+the user approves. An `authenticate` request involves none of it: the wallet
+only produces the [[ref:Owner Authentication Proof]].
+
+The work has an order, because each step depends on the one before. A wallet
+****MUST NOT**** send an approving response unless every step marked
+*required* has succeeded.
+
+### Before Changing Anything
+
+A wallet first checks the request, and refuses it if any check fails:
+
+1. If `expectedProviderDid` is set, the identity that answers ****MUST**** be that DID.
+2. Every `moduleDefinition` is a valid DWN module definition with a normalized module URI, and no module appears twice.
+3. No `moduleDefinition` contains `$keyAgreement` or `$encryption` anywhere. Encryption keys always come from the wallet.
+4. Every scope in `permissionScopes` is a valid DWN permission scope whose `module` equals its `moduleDefinition.module`.
+5. No scope is `Modules`/`Configure`. The wallet installs modules itself; it does not delegate that.
+6. `requestedSessionTtlSeconds`, if present, rounds down to at least 1.
+7. If the request contains `authentication`, the checks in [Wallet and Verifier Requirements](#wallet-and-verifier-requirements) pass.
+
+### The Delegate
+
+- If the request has no `delegateDid`, the wallet creates the delegate: a new
+  `did:jwk` with an Ed25519 key. It returns the delegate's keys in
+  `delegatePortableDid`, including the X25519 private key converted from the
+  Ed25519 key, which is the delegate's root key for DWN encryption.
+- If the request has a `delegateDid`, that DID is the delegate, and the wallet
+  returns no key material. `delegateDid` ****MUST**** be a bare DID.
+
+### The Session
+
+The grants of one approval form a session. Its lifetime is the value the user
+approved, or else `requestedSessionTtlSeconds`, or else **3600 seconds**; in
+every case at most **7,776,000 seconds** (90 days). Every grant of the session
+expires at the same instant.
+
+Each session grant carries a `connectSession` object in its data, so that a
+wallet can later show the user which application holds which grants:
+
+| Property | Limit | Meaning |
+|---|---|---|
+| `id` | 128 characters | ****REQUIRED****. An identifier shared by the grants of one approval |
+| `createdAt`, `expiresAt` | | ****REQUIRED****. Timestamps. `expiresAt` equals the grants' `dateExpires` |
+| `applicationId` | 512 | From the request |
+| `appName` | 128 | From the request |
+| `appIcon` | 2048 | From the request |
+| `origin` | 512 | The requester's origin. A wallet that knows the origin by its own means (see [Browser Popup `postMessage` Transport](#browser-popup-postmessage-transport)) ****MUST**** use that value instead of the request's |
+| `userAgent` | 512 | From `clientMetadata` |
+| `platform` | 128 | From `clientMetadata` |
+| `language` | 64 | From `clientMetadata` |
+| `languages` | 16 entries of 64 | From `clientMetadata` |
+| `timezone` | 128 | From `clientMetadata` |
+| `transport` | | `"relay"` or `"postMessage"` |
+
+Everything except `id`, `createdAt`, `expiresAt`, and a wallet-verified
+`origin` is the application's own claim. A wallet truncates values to the
+limits above. `connectSession` has no effect on authorization.
+
+### Modules (required)
+
+For each requested module, the wallet makes sure the owner's nodes have it
+installed, with the encryption keys the definition needs. The keys are the
+owner's module and path keys, derived as the
+[DWN specification](https://dwn-spec.pages.dev#module-keys) defines, and added
+to the definition as `$keyAgreement` by the wallet.
+
+| Installed on the owner's node | The wallet |
+|---|---|
+| Nothing | Installs the requested definition |
+| The requested definition, without the keys it needs | Installs it again, with keys |
+| The requested definition, with the owner's keys | Does nothing |
+| A different definition (comparing everything except `$keyAgreement`) | ****MUST NOT**** replace it unless the user explicitly approves the replacement |
+| Any definition whose `$keyAgreement` keys are not the owner's | ****MUST**** refuse the request |
+
+A module that is requested with no scopes and is named in another requested
+module's `uses` is a dependency. If it is already installed, the installed
+definition is kept. A module ****MUST**** be installed after the modules it
+`uses`.
+
+The wallet installs each module on its own node and on the owner's remote
+endpoints. Before it continues, it ****MUST**** confirm, by querying, that
+every endpoint it could reach now holds the definition, and it ****MUST****
+have reached at least one.
+
+### Session Grants (required)
+
+For each requested scope the wallet writes one [[ref:Permission Grant]] from
+the owner to the delegate, with the scope exactly as requested, the session's
+expiry, and the `connectSession` object.
+
+| Scope | `delegated` |
+|---|---|
+| `Records`/`Read`, `Records`/`Write`, `Records`/`Delete` | `true` |
+| `Messages`/`Read` | `true` |
+| `Modules`/`Query` | `false` |
+
+Each grant ****MUST**** be accepted (status `202`, or `409` if it is already
+there) by at least one of the owner's remote endpoints before the wallet
+responds. The delegate will present the grant to those endpoints, and a grant
+they do not hold authorizes nothing.
+
+### Grant Keys (required)
+
+A grant conveys authority but no keys. For each session grant that can have
+[grant keys](https://dwn-spec.pages.dev#grant-keys), and whose module uses
+encryption, the wallet writes one grant key record for every key the grant
+covers. This step runs for a module only if the request includes at least one
+`Records`/`Read` scope for it.
+
+- For a delegate the wallet created, the records are `grantKey` records,
+  encrypted to the delegate.
+- For a delegate the application supplied, the wallet resolves the delegate's
+  DID to learn its root X25519 public key, and the records are
+  `wrappedGrantKey` records wrapped to that key.
+
+Each record ****MUST**** be accepted (`202` or `409`) by at least one of the
+owner's remote endpoints before the wallet responds.
+
+### Revocation Grants
+
+For each session grant the wallet also writes a companion grant that lets the
+delegate revoke that one grant, and nothing else:
+
+```json
+{
+  "interface": "Records",
+  "method": "Write",
+  "module": "https://identity.foundation/dwn/permissions",
+  "contextId": "<recordId of the session grant>"
+}
+```
+
+The companion grant is `delegated: true`, expires with the session, and has no
+`connectSession`. The wallet sends it to the owner's remote endpoints, but does
+not wait for them to accept it; a client makes sure of that itself before it
+relies on the grant (see [Ending a Session](#ending-a-session)).
+
+The response's `delegateGrants` lists the session grants and then the
+companion grants. `sessionRevocations` holds one
+`{ "grantId", "revocationGrantId" }` pair per session grant.
+
+### Reference Timing
+
+The reference wallet waits at most 10 seconds for a DID to resolve and for
+each request to an endpoint, sends to at most 8 endpoints at a time, and gives
+the delivery of all session grants to one endpoint 20 seconds in total. These
+are not requirements.
 
 ## Client Processing
 
-1. **Grant Validation (`validateConnectResultGrants`)**: Before importing,
-   verifies every grant's `grantor === providerDid` and `grantee === delegateDid`,
-   verifies every non-revocation grant's scope is a subset of a requested scope,
-   verifies revocation grants match `Records.Write` on
-   `https://identity.foundation/dwn/permissions` with `contextId === grantId`,
-   and requires at least one non-revocation grant whenever `permissionRequests`
-   is non-empty (consequently, a request containing *only* `installationOnly`
-   modules fails client validation unless accompanied by at least one module
-   requesting scopes).
-2. **Two-Phase Local Grant Import**:
-   - Phase 1 (rollbackable): writes all grants to the delegate's local DWN
-     partition (`signAsOwner: true`), rolling back newly created (`202`) records
-     on any failure.
-   - Phase 2: writes all grants to `providerDid`'s local DWN partition via
-     `processRawMessage`.
-   - Sync scope (`deriveSyncScopeFromGrants`) is derived from non-expired
-     `Messages.Read` grants: an unscoped `Messages.Read` grant maps to `'all'`,
-     while module-wide `Messages.Read` grants collect their module URIs
-     (excluding `PermissionsModule` and path/context-scoped grants).
-3. **Session Status, Refresh, and Self-Revocation**:
-   - Connection status classifies sessions as `active`, `expiring-soon`
-     (default threshold `min(3600s, 10% of lifetime)`), `expired`, `revoked`, or
-     `none`, using the earliest `grant.dateExpires` (never display
-     `connectSession.expiresAt`).
-   - `AuthManager.refresh` sends `requestType: "refresh"` with the existing
-     `delegateDid` and `expectedProviderDid`, imports renewed grants without
-     replacing the delegate identity, and remembers per-`(delegateDid, providerDid)`
-     wallet routes.
-   - On `disconnect()`, the app first proactively ensures each companion
-     revocation grant exists on remote owner DWN endpoints
-     (`ensureRevocationGrantOnRemote`, healing any best-effort fan-out failure),
-     then writes `grant/revocation` records under `PermissionsModule` (see the
-     [DWN specification](https://github.com/enboxorg/dwn-spec) for `parentId`
-     and `tags.module` requirements) without wallet interaction, backed by a
-     durable revocation retry journal (`enbox:auth:revocationRetryContext`, max
-     4,096 entries) so offline/interrupted disconnects finish on next launch.
+### Checking the Response
+
+After opening the response and making the checks in
+[Checking a Response](#checking-a-response), and before using anything in it,
+a client ****MUST**** also check that:
+
+1. if it supplied a `delegateDid`, the response's `delegateDid` is that DID; and if it did not, the response contains `delegatePortableDid`, whose DID is then the delegate;
+2. every grant in `delegateGrants` is from `providerDid` to the delegate;
+3. every grant listed as a `revocationGrantId` in `sessionRevocations` has the scope `Records`/`Write` on `https://identity.foundation/dwn/permissions` with `contextId` equal to the paired `grantId`;
+4. every other grant is within a scope the client requested: it has the same `interface` and `method` as a requested scope, and every property of that requested scope has the same value in the grant; and
+5. if the client requested any permissions, at least one such grant is present.
+
+A response that fails a check ****MUST**** be rejected. The grants already
+exist on the owner's nodes by then, so the client ****SHOULD**** tell the user
+to revoke the session in their wallet.
+
+Because of rule 5, a request must ask for at least one scope. A request whose
+modules are all dependencies, with no scopes at all, cannot succeed.
+
+### Using the Grants
+
+A client stores the grants where its own node can find them, and invokes them
+as the DWN specification defines: `delegated` grants by signing as the
+delegate on the owner's behalf, and the `Modules`/`Query` grant by
+`permissionGrantId`.
+
+What a client may synchronize follows from its `Messages`/`Read` grants (see
+the [DWN Sync Protocol](https://dwn-sync-spec.pages.dev)): a grant with no
+`module` allows everything, and a grant for a whole module allows that module.
+Expired grants allow nothing.
+
+A client shows the user the state of a session from its grants, not from
+`connectSession`:
+
+| State | Condition |
+|---|---|
+| `revoked` | Any grant of the session has been revoked |
+| `expired` | The earliest `dateExpires` among the session's grants has passed |
+| `expiring-soon` | That time is near. By default: within one hour, or within 10% of the session's lifetime, whichever is less |
+| `active` | Otherwise |
+
+### Renewing a Session
+
+To renew, a client sends a request with `requestType: "refresh"`, the
+`delegateDid` it already has, and `expectedProviderDid` set to the owner DID.
+The wallet processes it like a `connect` request for a supplied delegate, and
+issues a new session to the same delegate. The client keeps its delegate
+identity and adds the new grants. A session may be renewed before or after it
+expires.
+
+### Ending a Session
+
+To disconnect, a client revokes each of its session grants by writing a
+revocation record to the owner's node, as the delegate, under the companion
+grant that `sessionRevocations` pairs with it. No wallet interaction is
+needed. The DWN specification defines the revocation record and its effect.
+
+Before writing a revocation, the client ****SHOULD**** send the companion
+grant to the owner's endpoint itself, since the wallet's own delivery of it is
+not guaranteed. A client ****SHOULD**** also remember revocations it could not
+deliver, and retry them the next time it runs, so that a disconnect made
+offline still takes effect.
 
 ## Transport Bindings
 
-### Relay Transport and Wallet URI Format
+### Relay Transport
 
-- **Fragment-Only Wallet URI**:
-  ```
-  {walletUri}#request_uri={percentEncodedRequestUri}&encryption_key={base64url32ByteKey}
-  ```
-  - Default custom native scheme: `enbox://connect`
-  - Default browser wallet path: `https://<wallet-origin>/connect/app`
-  - `parseWalletConnectUri()` reads **ONLY `URL.hash.slice(1)`** and ignores
-    query parameters (`?`) so the 32-byte `encryption_key` never leaks to HTTP
-    servers, CDNs, or access logs. Validates decoded key length === 32 bytes.
-- **QR Code**: Byte-mode QR versions 1–10, Error Correction Level M (15%),
-  quiet zone 2, imposing a hard **213-byte** UTF-8 Wallet URI cap
-  (`packages/browser/src/ui/qr.ts`), so wallet and relay base URLs must remain
-  compact.
-- **Same-Device Handoff**: Clickable QR cards and "Continue in Wallet" links
-  open with `target="_blank" rel="noopener noreferrer"` so the requesting tab
-  and its relay polling session remain alive without exposing `window.opener`.
-- **Auto-Reminting**: Before `onClaimed` or PIN entry, browser modals re-mint
-  fresh PAR pointers at `max(10_000ms, expiresIn * 1000 - 120_000ms)` (leaving a
-  2-minute safety margin).
-- **Polling & PIN Retry**: Per-HTTP timeout `30s`, token poll interval `3s`,
-  overall timeout `300s`, visibility-aware sleep, `AbortSignal` cancellation.
-  `ConnectClient` performs a single PIN decryption attempt; `@enbox/browser`'s
-  `runRelayConnect` allows up to **6** interactive PIN retries in memory
-  (currently failing closed immediately only on errors prefixed with `"Connect:"`;
-  implementations ****SHOULD**** also fail closed on structural JWE errors such
-  as `InvalidJwe` or `AlgorithmNotSupported`).
+#### The Wallet URI
+
+The application hands the request to the wallet as a [[ref:Wallet URI]]:
+
+```
+<wallet URI>#request_uri=<request_uri, percent-encoded>&encryption_key=<key, base64url>
+```
+
+- `<wallet URI>` is the address of the wallet: a web page, such as
+  `https://wallet.example/connect/app`, or an application link, such as
+  `enbox://connect`, which is what the reference client uses when it is given
+  no other.
+- `request_uri` is the value the relay returned when the request was stored.
+- `encryption_key` is the 32-byte key that encrypts the request.
+
+Both parameters are in the **fragment**. A browser never sends a fragment to
+a server, so the key cannot end up in a web server's or a proxy's logs. A
+wallet ****MUST**** read the parameters from the fragment only, and
+****MUST**** ignore any of the same name in the query string. It
+****MUST**** reject a key that does not decode to exactly 32 bytes.
+
+A wallet URI shown as a QR code has to fit in one. The reference client draws
+QR codes that hold at most 213 bytes, so wallet and relay URLs need to be
+short.
+
+An application that opens the wallet as a link in the same browser
+****SHOULD**** open it in a new tab with `rel="noopener noreferrer"`, so that
+its own page stays open to collect the response, and the wallet gets no
+handle on it.
+
+#### While Waiting
+
+- **Keeping the request alive.** A request on the relay expires after
+  `expires_in` seconds. Until a wallet has fetched it, an application that is
+  still showing a QR code ****SHOULD**** store a fresh request before the old
+  one expires, and show the new Wallet URI. The reference client does so two
+  minutes before expiry.
+- **Polling.** The reference client polls for the response every 3 seconds,
+  for up to 300 seconds.
+- **The PIN.** An application that lets the user try the PIN again
+  ****MUST**** limit the attempts; the reference browser client allows 6. It
+  ****SHOULD**** give up at once on any failure that is not a wrong PIN, such
+  as a malformed envelope or an unexpected algorithm.
 
 ### Browser Popup `postMessage` Transport
 
-Provides PIN-less, zero-relay E2E encrypted connection between a browser tab and
-a web wallet hosted at `https://<wallet-origin>/dweb-connect` (**zero plaintext
-fallback**):
+The wallet's page for this transport is at
+`https://<wallet origin>/dweb-connect`. Everything that passes between the two
+windows is encrypted; there is no unencrypted fallback.
 
-- **Synchronous Popup Launch**: Client opens `/dweb-connect` (window name
-  `enbox-dweb-connect`, `width=500,height=700`) synchronously inside the click
-  handler before async key generation to survive popup blockers. Default timeout
-  `300s`, close poll `500ms`. Closing the popup *before* `enbox-connect-loaded`
-  immediately rejects with `PopupWindowClosedError` (no grace period); closing
-  *after* `enbox-connect-loaded` waits a `1,500ms` grace window before resolving
-  `"DENIED"`.
-- **Exact 4 Wire Messages**:
-  1. Wallet → Client (`loaded` beacon):
-     ```json
-     {
-       "type": "enbox-connect-loaded",
-       "walletEpk": { "kty": "OKP", "crv": "X25519", "x": "<base64url>" },
-       "walletOrigin": "https://wallet.example"
-     }
-     ```
-     (Client validates `assertX25519PublicJwk(walletEpk)` and
-     `walletOrigin === pinnedWalletOrigin`, failing closed otherwise.)
-  2. Client → Wallet (ECDH-ES sealed request):
-     ```json
-     {
-       "type": "enbox-connect-request",
-       "jwe": "<Compact JWE: alg=ECDH-ES, enc=XC20P, typ=enbox-connect-req, cty=JWT, apv=base64url(UTF8(walletOrigin))>"
-     }
-     ```
-  3. Wallet → Client (ECDH-ES sealed response or `"DENIED"`):
-     ```json
-     {
-       "type": "enbox-connect-response",
-       "payload": "<Compact JWE: alg=ECDH-ES, enc=XC20P, typ=enbox-connect-res, cty=JWT, apu=base64url(UTF8(state))> | \"DENIED\""
-     }
-     ```
-  4. Client → Wallet (completion ack; sent immediately after opening/verifying
-     the response; wallet waits up to `5,000ms`):
-     ```json
-     { "type": "enbox-connect-ack" }
-     ```
-- **Mandatory Pinning & `Referrer-Policy`**: Neither side ever uses
-  `targetOrigin: "*"`. Wallet resolves `dappOrigin` from explicit config or
-  `document.referrer` (failing closed if absent — client pages ****MUST NOT****
-  serve `Referrer-Policy: no-referrer` or open the popup with `noreferrer`).
-  Both sides drop any `MessageEvent` where
-  `event.origin !== expectedOrigin || event.source !== expectedSource`. Wallet
-  validates `apv === base64url(UTF8(walletOrigin))` and
-  `request.reply.mode === "post_message"`, and propagates `dappOrigin` as
-  `verifiedRequesterOrigin`.
+**Opening the popup.** The application opens the page directly in the handler
+of the user's click, before doing anything asynchronous, or a popup blocker
+will stop it. If the user closes the popup before the wallet has announced
+itself, the exchange has failed. If they close it afterwards, the reference
+client waits 1.5 seconds for a response that may already be on its way, and
+then treats the request as denied. It waits at most 300 seconds overall.
+
+**The four messages.**
+
+1. Wallet to application, when the wallet's page has loaded:
+   ```json
+   {
+     "type": "enbox-connect-loaded",
+     "walletEpk": { "kty": "OKP", "crv": "X25519", "x": "<base64url>" },
+     "walletOrigin": "https://wallet.example"
+   }
+   ```
+   `walletEpk` is an X25519 public key the wallet has created for this
+   exchange. The application ****MUST**** check that it is one, and that
+   `walletOrigin` is the origin of the page it opened.
+2. Application to wallet:
+   ```json
+   { "type": "enbox-connect-request", "jwe": "<the encrypted request>" }
+   ```
+   The request is encrypted to `walletEpk`, with `apv` set to `walletOrigin`
+   (see [Deriving a Key with `ECDH-ES`](#deriving-a-key-with-ecdh-es)). Its
+   `reply` is `{ "mode": "post_message" }`.
+3. Wallet to application:
+   ```json
+   { "type": "enbox-connect-response", "payload": "<the encrypted response, or DENIED>" }
+   ```
+4. Application to wallet, as soon as it has opened and verified the response:
+   ```json
+   { "type": "enbox-connect-ack" }
+   ```
+   The wallet can then close its window. The reference wallet waits 5 seconds
+   for this message.
+
+**Knowing who is on the other side.** This transport has no PIN. What takes
+its place is that the browser tells each window the origin of every message
+it receives, and delivers a posted message only to the origin the sender
+names.
+
+- Each side ****MUST**** post only to the specific origin of the other, never
+  to `*`.
+- Each side ****MUST**** ignore any message whose origin, or whose source
+  window, is not the one it expects.
+- The wallet learns the application's origin from its own configuration, or
+  else from the page's referrer. If it has neither, it ****MUST**** refuse
+  to proceed. An application page therefore ****MUST NOT**** suppress the
+  referrer, whether with `Referrer-Policy: no-referrer` or by opening the
+  popup with `noreferrer`.
+- The wallet ****MUST**** check that the request's `apv` is its own origin,
+  and that its `reply.mode` is `post_message`.
+
+The application's origin, as the browser reports it, is what this
+specification calls the *verified requester origin*. The wallet records it in
+`connectSession.origin`, and requires it to match the audience of an
+[[ref:Owner Authentication Proof]].
 
 ## Permission Model
 
-### High-Level Shorthands and Baseline Scopes
+A request lists each module the application needs, with the scopes it wants
+there. For a module it will read and write, an application normally asks for:
 
-- Supported high-level permission shorthands: **`read`**, **`write`**, **`delete`**
-  (default: `["read", "write", "delete"]`). `query`, `subscribe`, and `configure`
-  shorthands do not exist. `installationOnly: true` with `permissions: []`
-  requests dependency module installation with zero scopes (must accompany at
-  least one scoped module in a request so `validateConnectResultGrants` observes
-  at least one non-revocation grant).
-- Baseline scopes added per requested module (unless `installationOnly`):
-  1. `{ "interface": "Modules", "method": "Query", "module": "<moduleUri>" }`
-  2. `{ "interface": "Messages", "method": "Read", "module": "<moduleUri>" }`
-- **Forbidden connect scopes**: `Records.Query`, `Records.Subscribe`,
-  `Records.Count` (use unified `Records.Read`), and `Modules.Configure` (the
-  wallet configures modules directly during approval).
+```json
+[
+  { "interface": "Modules",  "method": "Query",  "module": "<module URI>" },
+  { "interface": "Messages", "method": "Read",   "module": "<module URI>" },
+  { "interface": "Records",  "method": "Read",   "module": "<module URI>" },
+  { "interface": "Records",  "method": "Write",  "module": "<module URI>" },
+  { "interface": "Records",  "method": "Delete", "module": "<module URI>" }
+]
+```
 
-### Delegated vs. Standard Grants
+- `Modules`/`Query` lets the delegate read the installed definition.
+- `Messages`/`Read` lets it synchronize the module.
+- `Records`/`Read` covers querying, counting, and subscribing as well as
+  reading. The DWN specification has no separate scopes for those.
+- `Modules`/`Configure` cannot be requested. The wallet installs modules
+  itself.
 
-| Scope | `delegated` | Rationale |
-|---|---|---|
-| `Records` / `Read`, `Write`, `Delete` | `true` | Delegate reads, writes, and deletes records acting as the user |
-| `Messages` / `Read` | `true` | Delegate syncs and subscribes to the user's module feed |
-| `Modules` / `Query` | `false` | Direct query of installed module definitions |
-| `Records` / `Write` on `https://identity.foundation/dwn/permissions` (`contextId: grantId`) | `true` | Least-privilege self-revocation of one specific session grant |
+A scope may be narrower than a whole module, with a `modulePath` or a
+`contextId`, as the DWN specification allows.
+
+A module that is needed only because another requested module `uses` it is
+listed with an empty `permissionScopes`. The wallet installs it and issues no
+grant for it.
+
+Which of the resulting grants are delegated is given under
+[Session Grants](#session-grants-required).
 
 ## Security and Privacy Considerations
 
-1. **Fragment-only relay key secrecy**: `request_uri` and `encryption_key` travel
-   exclusively in `#fragment` (query params ignored), preventing leakage to web
-   servers, proxies, CDNs, and `Referer` headers.
-2. **PIN strengthens the CEK**: Passing the PIN as salt to HKDF-SHA-256
-   (`info: "enbox/connect/v2/pin"`) gives both confidentiality and integrity
-   protection against an adversary with access to the relay blob and even the
-   ECDH secret.
-3. **Algorithm allow-lists & low-order point defense**: Every `CompactJwe.decrypt`
-   enforces strict `allowedAlgs`/`allowedEncs`, `typ`/`cty` checks, all-zero
-   X25519 shared-secret and same-keypair rejection, public-only
-   `responseKey`/`walletEpk` checks, and `did:jwk:`-pinned EdDSA JWT verification.
-4. **Channel & context binding**: `apv` binds popup requests to `walletOrigin`,
-   `apu` binds responses to `request.state`, popup wallets enforce
-   `reply.mode === "post_message"`, and `postMessage` pins `targetOrigin`,
-   `event.origin`, and `event.source` (never `"*"`).
-5. **Untrusted requester metadata**: Display hints are truncated to strict schema
-   bounds, and any transport supplying `verifiedRequesterOrigin` overwrites
-   `connectSession.origin` while keeping the untouched request for `request_hash`.
-6. **Fail-closed module encryption integrity**: Requesters cannot supply
-   `$keyAgreement` keys; wallets derive keys from the owner's root key, verify
-   thumbprints, forbid `Modules.Configure` delegation, and re-query endpoints for
-   convergence.
-7. **Pre-supplied delegate key custody**: Apps may supply `delegateDid` so
-   delegate signing keys never leave the app; encryption keys arrive via
-   `wrappedGrantKey` envelopes wrapped to the delegate's public X25519 key.
-8. **Client-side grant validation & least-privilege self-revocation**: Clients
-   reject over-scoped or mismatched grants before importing, and revocation
-   grants are confined to `contextId === grantId` backed by a durable retry
-   journal.
-9. **Owner authentication separation & replay defense**: Owner proofs never
-   export owner keys, bind HTTPS `audience` + `challenge` + canonical
-   `request_hash`, check `300s`/`30s` lifetimes three times, reject deactivated
-   DIDs, and require server-side atomic `(audience, challenge)` consumption.
-10. **Relay data minimization**: Relay blobs expire after 600s and are deleted
-    on single-use read; `/status/:requestId` and `/complete/:state` carry only
-    booleans and reveal neither DIDs nor grants; same-device links use
-    `rel="noopener noreferrer"`.
+- **The relay is not trusted.** It holds only ciphertext, for at most 600
+  seconds, and hands each item out once. Its two status routes answer with a
+  single boolean. A relay can withhold or delay messages, but cannot read or
+  alter them.
+- **The request key stays off the network.** It travels only in the fragment
+  of the Wallet URI, which browsers do not send to servers.
+- **The response is bound to its request.** It is encrypted to a key that
+  exists only for this request, with the request's `state` mixed into the key
+  derivation, and it must echo the request's `nonce`.
+- **The PIN binds the response to the wallet in front of the user.** Someone
+  who saw the QR code can read the request, but cannot produce a response the
+  application will accept without also knowing the PIN.
+- **Origins take the PIN's place in a browser.** Each side posts only to the
+  other's exact origin and ignores messages from anywhere else, and a request
+  is bound to the wallet's origin by `apv`.
+- **Algorithms are fixed.** A recipient accepts exactly one `alg` and one
+  `enc` for the envelope it expects, checks `typ` and `cty`, and rejects weak
+  X25519 inputs. Signatures are always by `did:jwk`, so verifying one needs no
+  network access.
+- **What the application says about itself is unverified.** Its name, icon,
+  and device details are shown to the user and recorded, within fixed size
+  limits, as claims. Only an origin the wallet learned by its own means is
+  more than a claim.
+- **An application cannot choose the user's encryption keys.** A request that
+  supplies `$keyAgreement` is refused. The wallet derives every key from the
+  owner's root key, and refuses to proceed where it finds an installed module
+  with keys that are not the owner's.
+- **An application can keep its delegate's keys to itself.** By supplying
+  `delegateDid`, it receives grants, and keys wrapped to that DID, without the
+  wallet ever holding the delegate's private keys.
+- **A wallet's answer is checked.** An application rejects grants from anyone
+  but the owner, to anyone but its delegate, or beyond what it asked for.
+- **A delegate can end its own session, and nothing more.** Each revocation
+  grant covers a single session grant.
+- **Owner authentication is separate from delegation.** The proof is signed by
+  the owner's own key, which never leaves the wallet. It is bound to the
+  relying service's origin, to a single-use challenge, and to the exact
+  request; it lives at most 300 seconds; and the relying service accepts each
+  challenge once.
 
-## Normative References
+## References
 
 [DWN Specification](https://dwn-spec.pages.dev)
 ~ Enbox Decentralized Web Node Specification.
