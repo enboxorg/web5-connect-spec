@@ -1,7 +1,7 @@
 {
   "specs": [
     {
-      "title": "Web5 Connect Protocol",
+      "title": "Enbox Connect Protocol",
       "spec_directory": "./spec",
       "output_path": "./spec",
       "logo": "images/logo.svg",
