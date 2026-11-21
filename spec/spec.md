@@ -1257,6 +1257,14 @@ Which of the resulting grants are delegated is given under
   request; it lives at most 300 seconds; and the relying service accepts each
   challenge once.
 
+## Conformance Test Vectors
+
+Deterministic JSON test vectors for RFC 8785 JCS `request_hash` digests,
+5-part Compact JWE (`XC20P`) envelopes across all four Connect channels
+(including PIN HKDF strengthening), and offline-verifiable Owner Authentication
+Proofs live in
+[`test-vectors/`](https://github.com/enboxorg/web5-connect-spec/tree/main/test-vectors).
+
 ## References
 
 [DWN Specification](https://dwn-spec.pages.dev)

@@ -1,0 +1,269 @@
+{
+  "suite": "web5-connect-spec/owner-authentication-proof",
+  "spec": "https://web5-connect-spec.pages.dev#owner-authentication-proofs",
+  "description": "Offline-verifiable Owner Authentication Proofs across EdDSA (Ed25519), ES256K (secp256k1), and ES256 (P-256), plus clock-skew/expiry boundaries and context-mismatch failure.",
+  "vectors": [
+    {
+      "id": "valid-ed25519-eddsa",
+      "description": "Valid Owner Authentication Proof signed with EdDSA (Ed25519, 64-byte raw signature) verified offline against did:jwk.",
+      "ownerIdentity": "alice",
+      "providerDid": "did:jwk:eyJjcnYiOiJFZDI1NTE5Iiwia3R5IjoiT0tQIiwieCI6Ii1nLThSZkhZMjRfUk8zc01MQUFNdFlNeUxXdFJqT0tSbWJtRmNtTmREV00iLCJraWQiOiJMS3BzMVp6V09QektCRnAxOUpIWWs1ZUp3VV9BOHJmazk3ODBVNFFGMWRzIn0",
+      "curve": "Ed25519",
+      "algorithm": "EdDSA",
+      "request": {
+        "clientDid": "did:jwk:eyJjcnYiOiJFZDI1NTE5Iiwia3R5IjoiT0tQIiwieCI6Inc1M3pjbkNIemg2M3o3RnE0eFJRM0RsMEVaWENQaldlWGNzVUhGdm84OWMiLCJraWQiOiJhaEpqc2NEUnEtRGY3OG5IcDF5QzVoX2pEMFZvWXVYQUZnNTN6VXdsSVd3In0",
+        "appName": "Notes",
+        "appIcon": "https://notes.example/icon.png",
+        "applicationId": "https://notes.example",
+        "authentication": {
+          "version": 1,
+          "audience": "https://notes.example",
+          "challenge": "XmHeqtgz6v3VV1wySBjMMaU7i__p-UTL"
+        },
+        "permissionRequests": [],
+        "requestType": "authenticate",
+        "supportedDidMethods": [
+          "did:jwk"
+        ],
+        "nonce": "NsOu7LXXPz0IC75XO1e-FQ",
+        "state": "Lfiq53fzVXb4Ll7r5XHUXA",
+        "responseKey": {
+          "kty": "OKP",
+          "crv": "X25519",
+          "x": "1gMaU5XqOCcM1dwZo1-swmxJBzUScz_D_s4c9XPpuEQ",
+          "kid": "HRJKUWDEPpZXEOqt_A2Yirmo4CRnmn66wuoW5IO1iog"
+        },
+        "reply": {
+          "mode": "direct_post",
+          "callbackUrl": "https://relay.example/connect/callback"
+        }
+      },
+      "expected": {
+        "audience": "https://notes.example",
+        "challenge": "XmHeqtgz6v3VV1wySBjMMaU7i__p-UTL"
+      },
+      "proof": "eyJhbGciOiJFZERTQSIsImtpZCI6ImRpZDpqd2s6ZXlKamNuWWlPaUpGWkRJMU5URTVJaXdpYTNSNUlqb2lUMHRRSWl3aWVDSTZJaTFuTFRoU1praFpNalJmVWs4emMwMU1RVUZOZEZsTmVVeFhkRkpxVDB0U2JXSnRSbU50VG1SRVYwMGlMQ0pyYVdRaU9pSk1TM0J6TVZwNlYwOVFla3RDUm5BeE9VcElXV3MxWlVwM1ZWOUJPSEptYXprM09EQlZORkZHTVdSekluMCMwIiwidHlwIjoiZW5ib3gtY29ubmVjdC1vd25lci1hdXRoZW50aWNhdGlvbitqd3QifQ.eyJhdWQiOiJodHRwczovL25vdGVzLmV4YW1wbGUiLCJleHAiOjE3ODAyNzIzMDAsImlhdCI6MTc4MDI3MjAwMCwiaXNzIjoiZGlkOmp3azpleUpqY25ZaU9pSkZaREkxTlRFNUlpd2lhM1I1SWpvaVQwdFFJaXdpZUNJNklpMW5MVGhTWmtoWk1qUmZVazh6YzAxTVFVRk5kRmxOZVV4WGRGSnFUMHRTYldKdFJtTnRUbVJFVjAwaUxDSnJhV1FpT2lKTVMzQnpNVnA2VjA5UWVrdENSbkF4T1VwSVdXczFaVXAzVlY5Qk9ISm1hemszT0RCVk5GRkdNV1J6SW4wIiwibm9uY2UiOiJYbUhlcXRnejZ2M1ZWMXd5U0JqTU1hVTdpX19wLVVUTCIsInB1cnBvc2UiOiJlbmJveC1jb25uZWN0LWF1dGhlbnRpY2F0aW9uIiwicmVxdWVzdF9oYXNoIjoieHRsN1ljZ0JKcE93Y2RJbmRjcXAzSlNGVkNOeGw1cDE3cFR2T2dqZGlVYyIsInN1YiI6ImRpZDpqd2s6ZXlKamNuWWlPaUpGWkRJMU5URTVJaXdpYTNSNUlqb2lUMHRRSWl3aWVDSTZJaTFuTFRoU1praFpNalJmVWs4emMwMU1RVUZOZEZsTmVVeFhkRkpxVDB0U2JXSnRSbU50VG1SRVYwMGlMQ0pyYVdRaU9pSk1TM0J6TVZwNlYwOVFla3RDUm5BeE9VcElXV3MxWlVwM1ZWOUJPSEptYXprM09EQlZORkZHTVdSekluMCJ9.ubdy9tKj2NbynPtyWEv_I5qDbLiKPYdBDSmGbzyDzX4VBBY7MRPUHO_Pg3iWFHSSg5zY_XfUes_jUrjKr0E7CQ",
+      "decodedHeader": {
+        "alg": "EdDSA",
+        "kid": "did:jwk:eyJjcnYiOiJFZDI1NTE5Iiwia3R5IjoiT0tQIiwieCI6Ii1nLThSZkhZMjRfUk8zc01MQUFNdFlNeUxXdFJqT0tSbWJtRmNtTmREV00iLCJraWQiOiJMS3BzMVp6V09QektCRnAxOUpIWWs1ZUp3VV9BOHJmazk3ODBVNFFGMWRzIn0#0",
+        "typ": "enbox-connect-owner-authentication+jwt"
+      },
+      "decodedPayload": {
+        "aud": "https://notes.example",
+        "exp": 1780272300,
+        "iat": 1780272000,
+        "iss": "did:jwk:eyJjcnYiOiJFZDI1NTE5Iiwia3R5IjoiT0tQIiwieCI6Ii1nLThSZkhZMjRfUk8zc01MQUFNdFlNeUxXdFJqT0tSbWJtRmNtTmREV00iLCJraWQiOiJMS3BzMVp6V09QektCRnAxOUpIWWs1ZUp3VV9BOHJmazk3ODBVNFFGMWRzIn0",
+        "nonce": "XmHeqtgz6v3VV1wySBjMMaU7i__p-UTL",
+        "purpose": "enbox-connect-authentication",
+        "request_hash": "xtl7YcgBJpOwcdIndcqp3JSFVCNxl5p17pTvOgjdiUc",
+        "sub": "did:jwk:eyJjcnYiOiJFZDI1NTE5Iiwia3R5IjoiT0tQIiwieCI6Ii1nLThSZkhZMjRfUk8zc01MQUFNdFlNeUxXdFJqT0tSbWJtRmNtTmREV00iLCJraWQiOiJMS3BzMVp6V09QektCRnAxOUpIWWs1ZUp3VV9BOHJmazk3ODBVNFFGMWRzIn0"
+      },
+      "verifyAtNow": 1780272010,
+      "expect": {
+        "valid": true,
+        "providerDid": "did:jwk:eyJjcnYiOiJFZDI1NTE5Iiwia3R5IjoiT0tQIiwieCI6Ii1nLThSZkhZMjRfUk8zc01MQUFNdFlNeUxXdFJqT0tSbWJtRmNtTmREV00iLCJraWQiOiJMS3BzMVp6V09QektCRnAxOUpIWWs1ZUp3VV9BOHJmazk3ODBVNFFGMWRzIn0",
+        "requestHash": "xtl7YcgBJpOwcdIndcqp3JSFVCNxl5p17pTvOgjdiUc"
+      }
+    },
+    {
+      "id": "valid-secp256k1-es256k",
+      "description": "Valid Owner Authentication Proof signed with ES256K (secp256k1, 64-byte raw signature) verified offline against did:jwk.",
+      "ownerIdentity": "secp256k1User",
+      "providerDid": "did:jwk:eyJrdHkiOiJFQyIsImNydiI6InNlY3AyNTZrMSIsIngiOiJOZmMzXzNKUmtDcUphNzFPRE9HRVhpMV8tTnEtQy1SYXRRckl4VWhiNjVBIiwieSI6IjdHblRLd2pMbGZfeEFVczBJS3dQbktLVlNTYWF6MnZGQUUwZzFRSkctNTQiLCJraWQiOiJjNWVlRWp6aGRaa0k5MVc5WU9RdDZNSXRUdzhha3pJV3d5MTlVRU1zcTBNIn0",
+      "curve": "secp256k1",
+      "algorithm": "ES256K",
+      "request": {
+        "clientDid": "did:jwk:eyJjcnYiOiJFZDI1NTE5Iiwia3R5IjoiT0tQIiwieCI6Inc1M3pjbkNIemg2M3o3RnE0eFJRM0RsMEVaWENQaldlWGNzVUhGdm84OWMiLCJraWQiOiJhaEpqc2NEUnEtRGY3OG5IcDF5QzVoX2pEMFZvWXVYQUZnNTN6VXdsSVd3In0",
+        "appName": "Notes",
+        "appIcon": "https://notes.example/icon.png",
+        "applicationId": "https://notes.example",
+        "authentication": {
+          "version": 1,
+          "audience": "https://notes.example",
+          "challenge": "XmHeqtgz6v3VV1wySBjMMaU7i__p-UTL"
+        },
+        "permissionRequests": [],
+        "requestType": "authenticate",
+        "supportedDidMethods": [
+          "did:jwk"
+        ],
+        "nonce": "NsOu7LXXPz0IC75XO1e-FQ",
+        "state": "Lfiq53fzVXb4Ll7r5XHUXA",
+        "responseKey": {
+          "kty": "OKP",
+          "crv": "X25519",
+          "x": "1gMaU5XqOCcM1dwZo1-swmxJBzUScz_D_s4c9XPpuEQ",
+          "kid": "HRJKUWDEPpZXEOqt_A2Yirmo4CRnmn66wuoW5IO1iog"
+        },
+        "reply": {
+          "mode": "direct_post",
+          "callbackUrl": "https://relay.example/connect/callback"
+        }
+      },
+      "expected": {
+        "audience": "https://notes.example",
+        "challenge": "XmHeqtgz6v3VV1wySBjMMaU7i__p-UTL"
+      },
+      "proof": "eyJhbGciOiJFUzI1NksiLCJraWQiOiJkaWQ6andrOmV5SnJkSGtpT2lKRlF5SXNJbU55ZGlJNkluTmxZM0F5TlRack1TSXNJbmdpT2lKT1ptTXpYek5LVW10RGNVcGhOekZQUkU5SFJWaHBNVjh0VG5FdFF5MVNZWFJSY2tsNFZXaGlOalZCSWl3aWVTSTZJamRIYmxSTGQycE1iR1pmZUVGVmN6QkpTM2RRYmt0TFZsTlRZV0Y2TW5aR1FVVXdaekZSU2tjdE5UUWlMQ0pyYVdRaU9pSmpOV1ZsUldwNmFHUmFhMGs1TVZjNVdVOVJkRFpOU1hSVWR6aGhhM3BKVjNkNU1UbFZSVTF6Y1RCTkluMCMwIiwidHlwIjoiZW5ib3gtY29ubmVjdC1vd25lci1hdXRoZW50aWNhdGlvbitqd3QifQ.eyJhdWQiOiJodHRwczovL25vdGVzLmV4YW1wbGUiLCJleHAiOjE3ODAyNzIzMDAsImlhdCI6MTc4MDI3MjAwMCwiaXNzIjoiZGlkOmp3azpleUpyZEhraU9pSkZReUlzSW1OeWRpSTZJbk5sWTNBeU5UWnJNU0lzSW5naU9pSk9abU16WHpOS1VtdERjVXBoTnpGUFJFOUhSVmhwTVY4dFRuRXRReTFTWVhSUmNrbDRWV2hpTmpWQklpd2llU0k2SWpkSGJsUkxkMnBNYkdaZmVFRlZjekJKUzNkUWJrdExWbE5UWVdGNk1uWkdRVVV3WnpGUlNrY3ROVFFpTENKcmFXUWlPaUpqTldWbFJXcDZhR1JhYTBrNU1WYzVXVTlSZERaTlNYUlVkemhoYTNwSlYzZDVNVGxWUlUxemNUQk5JbjAiLCJub25jZSI6IlhtSGVxdGd6NnYzVlYxd3lTQmpNTWFVN2lfX3AtVVRMIiwicHVycG9zZSI6ImVuYm94LWNvbm5lY3QtYXV0aGVudGljYXRpb24iLCJyZXF1ZXN0X2hhc2giOiJ4dGw3WWNnQkpwT3djZEluZGNxcDNKU0ZWQ054bDVwMTdwVHZPZ2pkaVVjIiwic3ViIjoiZGlkOmp3azpleUpyZEhraU9pSkZReUlzSW1OeWRpSTZJbk5sWTNBeU5UWnJNU0lzSW5naU9pSk9abU16WHpOS1VtdERjVXBoTnpGUFJFOUhSVmhwTVY4dFRuRXRReTFTWVhSUmNrbDRWV2hpTmpWQklpd2llU0k2SWpkSGJsUkxkMnBNYkdaZmVFRlZjekJKUzNkUWJrdExWbE5UWVdGNk1uWkdRVVV3WnpGUlNrY3ROVFFpTENKcmFXUWlPaUpqTldWbFJXcDZhR1JhYTBrNU1WYzVXVTlSZERaTlNYUlVkemhoYTNwSlYzZDVNVGxWUlUxemNUQk5JbjAifQ.SgdEfVj-SMQ0gkUitOzEFzpSW3qDYPWeqzZXVC3xcwt2a_b5r8wyITQqmxffFiIyajjtidM9DOgeoame_Apigw",
+      "decodedHeader": {
+        "alg": "ES256K",
+        "kid": "did:jwk:eyJrdHkiOiJFQyIsImNydiI6InNlY3AyNTZrMSIsIngiOiJOZmMzXzNKUmtDcUphNzFPRE9HRVhpMV8tTnEtQy1SYXRRckl4VWhiNjVBIiwieSI6IjdHblRLd2pMbGZfeEFVczBJS3dQbktLVlNTYWF6MnZGQUUwZzFRSkctNTQiLCJraWQiOiJjNWVlRWp6aGRaa0k5MVc5WU9RdDZNSXRUdzhha3pJV3d5MTlVRU1zcTBNIn0#0",
+        "typ": "enbox-connect-owner-authentication+jwt"
+      },
+      "decodedPayload": {
+        "aud": "https://notes.example",
+        "exp": 1780272300,
+        "iat": 1780272000,
+        "iss": "did:jwk:eyJrdHkiOiJFQyIsImNydiI6InNlY3AyNTZrMSIsIngiOiJOZmMzXzNKUmtDcUphNzFPRE9HRVhpMV8tTnEtQy1SYXRRckl4VWhiNjVBIiwieSI6IjdHblRLd2pMbGZfeEFVczBJS3dQbktLVlNTYWF6MnZGQUUwZzFRSkctNTQiLCJraWQiOiJjNWVlRWp6aGRaa0k5MVc5WU9RdDZNSXRUdzhha3pJV3d5MTlVRU1zcTBNIn0",
+        "nonce": "XmHeqtgz6v3VV1wySBjMMaU7i__p-UTL",
+        "purpose": "enbox-connect-authentication",
+        "request_hash": "xtl7YcgBJpOwcdIndcqp3JSFVCNxl5p17pTvOgjdiUc",
+        "sub": "did:jwk:eyJrdHkiOiJFQyIsImNydiI6InNlY3AyNTZrMSIsIngiOiJOZmMzXzNKUmtDcUphNzFPRE9HRVhpMV8tTnEtQy1SYXRRckl4VWhiNjVBIiwieSI6IjdHblRLd2pMbGZfeEFVczBJS3dQbktLVlNTYWF6MnZGQUUwZzFRSkctNTQiLCJraWQiOiJjNWVlRWp6aGRaa0k5MVc5WU9RdDZNSXRUdzhha3pJV3d5MTlVRU1zcTBNIn0"
+      },
+      "verifyAtNow": 1780272010,
+      "expect": {
+        "valid": true,
+        "providerDid": "did:jwk:eyJrdHkiOiJFQyIsImNydiI6InNlY3AyNTZrMSIsIngiOiJOZmMzXzNKUmtDcUphNzFPRE9HRVhpMV8tTnEtQy1SYXRRckl4VWhiNjVBIiwieSI6IjdHblRLd2pMbGZfeEFVczBJS3dQbktLVlNTYWF6MnZGQUUwZzFRSkctNTQiLCJraWQiOiJjNWVlRWp6aGRaa0k5MVc5WU9RdDZNSXRUdzhha3pJV3d5MTlVRU1zcTBNIn0",
+        "requestHash": "xtl7YcgBJpOwcdIndcqp3JSFVCNxl5p17pTvOgjdiUc"
+      }
+    },
+    {
+      "id": "valid-p256-es256",
+      "description": "Valid Owner Authentication Proof signed with ES256 (P-256, 64-byte raw signature) verified offline against did:jwk.",
+      "ownerIdentity": "p256User",
+      "providerDid": "did:jwk:eyJrdHkiOiJFQyIsImNydiI6IlAtMjU2IiwieCI6IjdGUE9tTVZINVVtc25SMy1TUlJsNjEzYTRNUGczY0RMNmh6N0Y3WUxxcVEiLCJ5IjoiRUdZc25NUGZwSUR1WldZTThrLWx5Y3BjQTlHNk1LSUVnTnpEdlhod0d2RSIsImtpZCI6IjJnU21Hc2VjMDR0OWFkSlRGQktFQjY2X19uZ2lBYk9MOUpFU0xPRzViWk0ifQ",
+      "curve": "P-256",
+      "algorithm": "ES256",
+      "request": {
+        "clientDid": "did:jwk:eyJjcnYiOiJFZDI1NTE5Iiwia3R5IjoiT0tQIiwieCI6Inc1M3pjbkNIemg2M3o3RnE0eFJRM0RsMEVaWENQaldlWGNzVUhGdm84OWMiLCJraWQiOiJhaEpqc2NEUnEtRGY3OG5IcDF5QzVoX2pEMFZvWXVYQUZnNTN6VXdsSVd3In0",
+        "appName": "Notes",
+        "appIcon": "https://notes.example/icon.png",
+        "applicationId": "https://notes.example",
+        "authentication": {
+          "version": 1,
+          "audience": "https://notes.example",
+          "challenge": "XmHeqtgz6v3VV1wySBjMMaU7i__p-UTL"
+        },
+        "permissionRequests": [],
+        "requestType": "authenticate",
+        "supportedDidMethods": [
+          "did:jwk"
+        ],
+        "nonce": "NsOu7LXXPz0IC75XO1e-FQ",
+        "state": "Lfiq53fzVXb4Ll7r5XHUXA",
+        "responseKey": {
+          "kty": "OKP",
+          "crv": "X25519",
+          "x": "1gMaU5XqOCcM1dwZo1-swmxJBzUScz_D_s4c9XPpuEQ",
+          "kid": "HRJKUWDEPpZXEOqt_A2Yirmo4CRnmn66wuoW5IO1iog"
+        },
+        "reply": {
+          "mode": "direct_post",
+          "callbackUrl": "https://relay.example/connect/callback"
+        }
+      },
+      "expected": {
+        "audience": "https://notes.example",
+        "challenge": "XmHeqtgz6v3VV1wySBjMMaU7i__p-UTL"
+      },
+      "proof": "eyJhbGciOiJFUzI1NiIsImtpZCI6ImRpZDpqd2s6ZXlKcmRIa2lPaUpGUXlJc0ltTnlkaUk2SWxBdE1qVTJJaXdpZUNJNklqZEdVRTl0VFZaSU5WVnRjMjVTTXkxVFVsSnNOakV6WVRSTlVHY3pZMFJNTm1oNk4wWTNXVXh4Y1ZFaUxDSjVJam9pUlVkWmMyNU5VR1p3U1VSMVdsZFpUVGhyTFd4NVkzQmpRVGxITmsxTFNVVm5UbnBFZGxob2QwZDJSU0lzSW10cFpDSTZJakpuVTIxSGMyVmpNRFIwT1dGa1NsUkdRa3RGUWpZMlgxOXVaMmxCWWs5TU9VcEZVMHhQUnpWaVdrMGlmUSMwIiwidHlwIjoiZW5ib3gtY29ubmVjdC1vd25lci1hdXRoZW50aWNhdGlvbitqd3QifQ.eyJhdWQiOiJodHRwczovL25vdGVzLmV4YW1wbGUiLCJleHAiOjE3ODAyNzIzMDAsImlhdCI6MTc4MDI3MjAwMCwiaXNzIjoiZGlkOmp3azpleUpyZEhraU9pSkZReUlzSW1OeWRpSTZJbEF0TWpVMklpd2llQ0k2SWpkR1VFOXRUVlpJTlZWdGMyNVNNeTFUVWxKc05qRXpZVFJOVUdjelkwUk1ObWg2TjBZM1dVeHhjVkVpTENKNUlqb2lSVWRaYzI1TlVHWndTVVIxV2xkWlRUaHJMV3g1WTNCalFUbEhOazFMU1VWblRucEVkbGhvZDBkMlJTSXNJbXRwWkNJNklqSm5VMjFIYzJWak1EUjBPV0ZrU2xSR1FrdEZRalkyWDE5dVoybEJZazlNT1VwRlUweFBSelZpV2swaWZRIiwibm9uY2UiOiJYbUhlcXRnejZ2M1ZWMXd5U0JqTU1hVTdpX19wLVVUTCIsInB1cnBvc2UiOiJlbmJveC1jb25uZWN0LWF1dGhlbnRpY2F0aW9uIiwicmVxdWVzdF9oYXNoIjoieHRsN1ljZ0JKcE93Y2RJbmRjcXAzSlNGVkNOeGw1cDE3cFR2T2dqZGlVYyIsInN1YiI6ImRpZDpqd2s6ZXlKcmRIa2lPaUpGUXlJc0ltTnlkaUk2SWxBdE1qVTJJaXdpZUNJNklqZEdVRTl0VFZaSU5WVnRjMjVTTXkxVFVsSnNOakV6WVRSTlVHY3pZMFJNTm1oNk4wWTNXVXh4Y1ZFaUxDSjVJam9pUlVkWmMyNU5VR1p3U1VSMVdsZFpUVGhyTFd4NVkzQmpRVGxITmsxTFNVVm5UbnBFZGxob2QwZDJSU0lzSW10cFpDSTZJakpuVTIxSGMyVmpNRFIwT1dGa1NsUkdRa3RGUWpZMlgxOXVaMmxCWWs5TU9VcEZVMHhQUnpWaVdrMGlmUSJ9.JKo6plebrfcpKvbOPRUP8PlitspihEwSfhSrt6CpJJkjq6xxxKcl0-dkA4Jhdf8Y3YaLLIxK62gPS8l2uXkHdw",
+      "decodedHeader": {
+        "alg": "ES256",
+        "kid": "did:jwk:eyJrdHkiOiJFQyIsImNydiI6IlAtMjU2IiwieCI6IjdGUE9tTVZINVVtc25SMy1TUlJsNjEzYTRNUGczY0RMNmh6N0Y3WUxxcVEiLCJ5IjoiRUdZc25NUGZwSUR1WldZTThrLWx5Y3BjQTlHNk1LSUVnTnpEdlhod0d2RSIsImtpZCI6IjJnU21Hc2VjMDR0OWFkSlRGQktFQjY2X19uZ2lBYk9MOUpFU0xPRzViWk0ifQ#0",
+        "typ": "enbox-connect-owner-authentication+jwt"
+      },
+      "decodedPayload": {
+        "aud": "https://notes.example",
+        "exp": 1780272300,
+        "iat": 1780272000,
+        "iss": "did:jwk:eyJrdHkiOiJFQyIsImNydiI6IlAtMjU2IiwieCI6IjdGUE9tTVZINVVtc25SMy1TUlJsNjEzYTRNUGczY0RMNmh6N0Y3WUxxcVEiLCJ5IjoiRUdZc25NUGZwSUR1WldZTThrLWx5Y3BjQTlHNk1LSUVnTnpEdlhod0d2RSIsImtpZCI6IjJnU21Hc2VjMDR0OWFkSlRGQktFQjY2X19uZ2lBYk9MOUpFU0xPRzViWk0ifQ",
+        "nonce": "XmHeqtgz6v3VV1wySBjMMaU7i__p-UTL",
+        "purpose": "enbox-connect-authentication",
+        "request_hash": "xtl7YcgBJpOwcdIndcqp3JSFVCNxl5p17pTvOgjdiUc",
+        "sub": "did:jwk:eyJrdHkiOiJFQyIsImNydiI6IlAtMjU2IiwieCI6IjdGUE9tTVZINVVtc25SMy1TUlJsNjEzYTRNUGczY0RMNmh6N0Y3WUxxcVEiLCJ5IjoiRUdZc25NUGZwSUR1WldZTThrLWx5Y3BjQTlHNk1LSUVnTnpEdlhod0d2RSIsImtpZCI6IjJnU21Hc2VjMDR0OWFkSlRGQktFQjY2X19uZ2lBYk9MOUpFU0xPRzViWk0ifQ"
+      },
+      "verifyAtNow": 1780272010,
+      "expect": {
+        "valid": true,
+        "providerDid": "did:jwk:eyJrdHkiOiJFQyIsImNydiI6IlAtMjU2IiwieCI6IjdGUE9tTVZINVVtc25SMy1TUlJsNjEzYTRNUGczY0RMNmh6N0Y3WUxxcVEiLCJ5IjoiRUdZc25NUGZwSUR1WldZTThrLWx5Y3BjQTlHNk1LSUVnTnpEdlhod0d2RSIsImtpZCI6IjJnU21Hc2VjMDR0OWFkSlRGQktFQjY2X19uZ2lBYk9MOUpFU0xPRzViWk0ifQ",
+        "requestHash": "xtl7YcgBJpOwcdIndcqp3JSFVCNxl5p17pTvOgjdiUc"
+      }
+    }
+  ],
+  "timeWindowBoundaries": {
+    "proof": "eyJhbGciOiJFZERTQSIsImtpZCI6ImRpZDpqd2s6ZXlKamNuWWlPaUpGWkRJMU5URTVJaXdpYTNSNUlqb2lUMHRRSWl3aWVDSTZJaTFuTFRoU1praFpNalJmVWs4emMwMU1RVUZOZEZsTmVVeFhkRkpxVDB0U2JXSnRSbU50VG1SRVYwMGlMQ0pyYVdRaU9pSk1TM0J6TVZwNlYwOVFla3RDUm5BeE9VcElXV3MxWlVwM1ZWOUJPSEptYXprM09EQlZORkZHTVdSekluMCMwIiwidHlwIjoiZW5ib3gtY29ubmVjdC1vd25lci1hdXRoZW50aWNhdGlvbitqd3QifQ.eyJhdWQiOiJodHRwczovL25vdGVzLmV4YW1wbGUiLCJleHAiOjE3ODAyNzIzMDAsImlhdCI6MTc4MDI3MjAwMCwiaXNzIjoiZGlkOmp3azpleUpqY25ZaU9pSkZaREkxTlRFNUlpd2lhM1I1SWpvaVQwdFFJaXdpZUNJNklpMW5MVGhTWmtoWk1qUmZVazh6YzAxTVFVRk5kRmxOZVV4WGRGSnFUMHRTYldKdFJtTnRUbVJFVjAwaUxDSnJhV1FpT2lKTVMzQnpNVnA2VjA5UWVrdENSbkF4T1VwSVdXczFaVXAzVlY5Qk9ISm1hemszT0RCVk5GRkdNV1J6SW4wIiwibm9uY2UiOiJYbUhlcXRnejZ2M1ZWMXd5U0JqTU1hVTdpX19wLVVUTCIsInB1cnBvc2UiOiJlbmJveC1jb25uZWN0LWF1dGhlbnRpY2F0aW9uIiwicmVxdWVzdF9oYXNoIjoieHRsN1ljZ0JKcE93Y2RJbmRjcXAzSlNGVkNOeGw1cDE3cFR2T2dqZGlVYyIsInN1YiI6ImRpZDpqd2s6ZXlKamNuWWlPaUpGWkRJMU5URTVJaXdpYTNSNUlqb2lUMHRRSWl3aWVDSTZJaTFuTFRoU1praFpNalJmVWs4emMwMU1RVUZOZEZsTmVVeFhkRkpxVDB0U2JXSnRSbU50VG1SRVYwMGlMQ0pyYVdRaU9pSk1TM0J6TVZwNlYwOVFla3RDUm5BeE9VcElXV3MxWlVwM1ZWOUJPSEptYXprM09EQlZORkZHTVdSekluMCJ9.ubdy9tKj2NbynPtyWEv_I5qDbLiKPYdBDSmGbzyDzX4VBBY7MRPUHO_Pg3iWFHSSg5zY_XfUes_jUrjKr0E7CQ",
+    "providerDid": "did:jwk:eyJjcnYiOiJFZDI1NTE5Iiwia3R5IjoiT0tQIiwieCI6Ii1nLThSZkhZMjRfUk8zc01MQUFNdFlNeUxXdFJqT0tSbWJtRmNtTmREV00iLCJraWQiOiJMS3BzMVp6V09QektCRnAxOUpIWWs1ZUp3VV9BOHJmazk3ODBVNFFGMWRzIn0",
+    "iat": 1780272000,
+    "exp": 1780272300,
+    "cases": [
+      {
+        "id": "boundary-iat-minus-30-allowed",
+        "now": 1780271970,
+        "valid": true,
+        "note": "iat <= now + 30 passes at exact 30s skew boundary"
+      },
+      {
+        "id": "boundary-iat-minus-31-rejected",
+        "now": 1780271969,
+        "valid": false,
+        "failure": "expired-proof",
+        "note": "iat > now + 30 fails with expired-proof"
+      },
+      {
+        "id": "boundary-exp-minus-1-allowed",
+        "now": 1780272299,
+        "valid": true,
+        "note": "now < exp passes 1s before expiry"
+      },
+      {
+        "id": "boundary-at-exact-exp-rejected",
+        "now": 1780272300,
+        "valid": false,
+        "failure": "expired-proof",
+        "note": "now >= exp fails with expired-proof"
+      }
+    ]
+  },
+  "negativeCases": [
+    {
+      "id": "context-mismatch-wrong-audience",
+      "description": "Verifying a valid proof against a different expected audience fails with context-mismatch.",
+      "proof": "eyJhbGciOiJFZERTQSIsImtpZCI6ImRpZDpqd2s6ZXlKamNuWWlPaUpGWkRJMU5URTVJaXdpYTNSNUlqb2lUMHRRSWl3aWVDSTZJaTFuTFRoU1praFpNalJmVWs4emMwMU1RVUZOZEZsTmVVeFhkRkpxVDB0U2JXSnRSbU50VG1SRVYwMGlMQ0pyYVdRaU9pSk1TM0J6TVZwNlYwOVFla3RDUm5BeE9VcElXV3MxWlVwM1ZWOUJPSEptYXprM09EQlZORkZHTVdSekluMCMwIiwidHlwIjoiZW5ib3gtY29ubmVjdC1vd25lci1hdXRoZW50aWNhdGlvbitqd3QifQ.eyJhdWQiOiJodHRwczovL25vdGVzLmV4YW1wbGUiLCJleHAiOjE3ODAyNzIzMDAsImlhdCI6MTc4MDI3MjAwMCwiaXNzIjoiZGlkOmp3azpleUpqY25ZaU9pSkZaREkxTlRFNUlpd2lhM1I1SWpvaVQwdFFJaXdpZUNJNklpMW5MVGhTWmtoWk1qUmZVazh6YzAxTVFVRk5kRmxOZVV4WGRGSnFUMHRTYldKdFJtTnRUbVJFVjAwaUxDSnJhV1FpT2lKTVMzQnpNVnA2VjA5UWVrdENSbkF4T1VwSVdXczFaVXAzVlY5Qk9ISm1hemszT0RCVk5GRkdNV1J6SW4wIiwibm9uY2UiOiJYbUhlcXRnejZ2M1ZWMXd5U0JqTU1hVTdpX19wLVVUTCIsInB1cnBvc2UiOiJlbmJveC1jb25uZWN0LWF1dGhlbnRpY2F0aW9uIiwicmVxdWVzdF9oYXNoIjoieHRsN1ljZ0JKcE93Y2RJbmRjcXAzSlNGVkNOeGw1cDE3cFR2T2dqZGlVYyIsInN1YiI6ImRpZDpqd2s6ZXlKamNuWWlPaUpGWkRJMU5URTVJaXdpYTNSNUlqb2lUMHRRSWl3aWVDSTZJaTFuTFRoU1praFpNalJmVWs4emMwMU1RVUZOZEZsTmVVeFhkRkpxVDB0U2JXSnRSbU50VG1SRVYwMGlMQ0pyYVdRaU9pSk1TM0J6TVZwNlYwOVFla3RDUm5BeE9VcElXV3MxWlVwM1ZWOUJPSEptYXprM09EQlZORkZHTVdSekluMCJ9.ubdy9tKj2NbynPtyWEv_I5qDbLiKPYdBDSmGbzyDzX4VBBY7MRPUHO_Pg3iWFHSSg5zY_XfUes_jUrjKr0E7CQ",
+      "providerDid": "did:jwk:eyJjcnYiOiJFZDI1NTE5Iiwia3R5IjoiT0tQIiwieCI6Ii1nLThSZkhZMjRfUk8zc01MQUFNdFlNeUxXdFJqT0tSbWJtRmNtTmREV00iLCJraWQiOiJMS3BzMVp6V09QektCRnAxOUpIWWs1ZUp3VV9BOHJmazk3ODBVNFFGMWRzIn0",
+      "request": {
+        "clientDid": "did:jwk:eyJjcnYiOiJFZDI1NTE5Iiwia3R5IjoiT0tQIiwieCI6Inc1M3pjbkNIemg2M3o3RnE0eFJRM0RsMEVaWENQaldlWGNzVUhGdm84OWMiLCJraWQiOiJhaEpqc2NEUnEtRGY3OG5IcDF5QzVoX2pEMFZvWXVYQUZnNTN6VXdsSVd3In0",
+        "appName": "Notes",
+        "appIcon": "https://notes.example/icon.png",
+        "applicationId": "https://notes.example",
+        "authentication": {
+          "version": 1,
+          "audience": "https://notes.example",
+          "challenge": "XmHeqtgz6v3VV1wySBjMMaU7i__p-UTL"
+        },
+        "permissionRequests": [],
+        "requestType": "authenticate",
+        "supportedDidMethods": [
+          "did:jwk"
+        ],
+        "nonce": "NsOu7LXXPz0IC75XO1e-FQ",
+        "state": "Lfiq53fzVXb4Ll7r5XHUXA",
+        "responseKey": {
+          "kty": "OKP",
+          "crv": "X25519",
+          "x": "1gMaU5XqOCcM1dwZo1-swmxJBzUScz_D_s4c9XPpuEQ",
+          "kid": "HRJKUWDEPpZXEOqt_A2Yirmo4CRnmn66wuoW5IO1iog"
+        },
+        "reply": {
+          "mode": "direct_post",
+          "callbackUrl": "https://relay.example/connect/callback"
+        }
+      },
+      "expected": {
+        "audience": "https://evil.example",
+        "challenge": "XmHeqtgz6v3VV1wySBjMMaU7i__p-UTL"
+      },
+      "now": 1780272010,
+      "expectedFailure": "context-mismatch"
+    }
+  ]
+}

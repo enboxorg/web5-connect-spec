@@ -1,0 +1,60 @@
+{
+  "suite": "web5-connect-spec/jcs-canonicalization",
+  "spec": "https://web5-connect-spec.pages.dev#proof-compact-jws-format",
+  "description": "RFC 8785 JSON Canonicalization Scheme (JCS) canonical strings and SHA-256 base64url request_hash digests, including UTF-16 code-unit key sorting vs UTF-8 byte order and number/lone-surrogate formatting.",
+  "vectors": [
+    {
+      "id": "connect-request-canonical",
+      "description": "Full ConnectRequest canonical JSON and request_hash digest.",
+      "input": {
+        "clientDid": "did:jwk:eyJjcnYiOiJFZDI1NTE5Iiwia3R5IjoiT0tQIiwieCI6Inc1M3pjbkNIemg2M3o3RnE0eFJRM0RsMEVaWENQaldlWGNzVUhGdm84OWMiLCJraWQiOiJhaEpqc2NEUnEtRGY3OG5IcDF5QzVoX2pEMFZvWXVYQUZnNTN6VXdsSVd3In0",
+        "appName": "Notes",
+        "appIcon": "https://notes.example/icon.png",
+        "applicationId": "https://notes.example",
+        "authentication": {
+          "version": 1,
+          "audience": "https://notes.example",
+          "challenge": "XmHeqtgz6v3VV1wySBjMMaU7i__p-UTL"
+        },
+        "permissionRequests": [],
+        "requestType": "authenticate",
+        "supportedDidMethods": [
+          "did:jwk"
+        ],
+        "nonce": "NsOu7LXXPz0IC75XO1e-FQ",
+        "state": "Lfiq53fzVXb4Ll7r5XHUXA",
+        "responseKey": {
+          "kty": "OKP",
+          "crv": "X25519",
+          "x": "1gMaU5XqOCcM1dwZo1-swmxJBzUScz_D_s4c9XPpuEQ",
+          "kid": "HRJKUWDEPpZXEOqt_A2Yirmo4CRnmn66wuoW5IO1iog"
+        },
+        "reply": {
+          "mode": "direct_post",
+          "callbackUrl": "https://relay.example/connect/callback"
+        }
+      },
+      "canonicalJson": "{\"appIcon\":\"https://notes.example/icon.png\",\"appName\":\"Notes\",\"applicationId\":\"https://notes.example\",\"authentication\":{\"audience\":\"https://notes.example\",\"challenge\":\"XmHeqtgz6v3VV1wySBjMMaU7i__p-UTL\",\"version\":1},\"clientDid\":\"did:jwk:eyJjcnYiOiJFZDI1NTE5Iiwia3R5IjoiT0tQIiwieCI6Inc1M3pjbkNIemg2M3o3RnE0eFJRM0RsMEVaWENQaldlWGNzVUhGdm84OWMiLCJraWQiOiJhaEpqc2NEUnEtRGY3OG5IcDF5QzVoX2pEMFZvWXVYQUZnNTN6VXdsSVd3In0\",\"nonce\":\"NsOu7LXXPz0IC75XO1e-FQ\",\"permissionRequests\":[],\"reply\":{\"callbackUrl\":\"https://relay.example/connect/callback\",\"mode\":\"direct_post\"},\"requestType\":\"authenticate\",\"responseKey\":{\"crv\":\"X25519\",\"kid\":\"HRJKUWDEPpZXEOqt_A2Yirmo4CRnmn66wuoW5IO1iog\",\"kty\":\"OKP\",\"x\":\"1gMaU5XqOCcM1dwZo1-swmxJBzUScz_D_s4c9XPpuEQ\"},\"state\":\"Lfiq53fzVXb4Ll7r5XHUXA\",\"supportedDidMethods\":[\"did:jwk\"]}",
+      "expectedRequestHash": "xtl7YcgBJpOwcdIndcqp3JSFVCNxl5p17pTvOgjdiUc"
+    },
+    {
+      "id": "utf16-code-unit-key-ordering",
+      "description": "Keys sorted by UTF-16 code unit: U+1F600 (lead surrogate 0xD83D) MUST precede U+E000 (0xE000), opposite of UTF-8 byte order.",
+      "input": {
+        "": "bmp-pua",
+        "😀": "emoji-supplementary",
+        "a": 1
+      },
+      "canonicalJson": "{\"a\":1,\"😀\":\"emoji-supplementary\",\"\":\"bmp-pua\"}",
+      "expectedSha256Base64Url": "lXUv7D9S1-45ncneOEgc1aKjCmKXhcJY3Q0yjILPW7c",
+      "embeddedInRequestDigest": "8-6RUgxCkyRC2dBqRSq8WuWZUaUPjDyU7n_u7H4A0Q0"
+    },
+    {
+      "id": "numbers-and-lone-surrogate-escape",
+      "description": "Integer floats omit .0, -0 serializes as 0, absent properties are omitted, and lone surrogate U+D800 escapes as lowercase \\ud800.",
+      "note": "JSON cannot serialize raw undefined or -0 distinctly; test with in-memory -0, 1.0, and U+D800 in appName.",
+      "canonicalJson": "{\"appIcon\":\"https://notes.example/icon.png\",\"appName\":\"Notes \\ud800\",\"applicationId\":\"https://notes.example\",\"authentication\":{\"audience\":\"https://notes.example\",\"challenge\":\"XmHeqtgz6v3VV1wySBjMMaU7i__p-UTL\",\"version\":1},\"clientDid\":\"did:jwk:eyJjcnYiOiJFZDI1NTE5Iiwia3R5IjoiT0tQIiwieCI6Inc1M3pjbkNIemg2M3o3RnE0eFJRM0RsMEVaWENQaldlWGNzVUhGdm84OWMiLCJraWQiOiJhaEpqc2NEUnEtRGY3OG5IcDF5QzVoX2pEMFZvWXVYQUZnNTN6VXdsSVd3In0\",\"clientMetadata\":{\"intFloat\":1,\"negZero\":0},\"nonce\":\"NsOu7LXXPz0IC75XO1e-FQ\",\"permissionRequests\":[],\"reply\":{\"callbackUrl\":\"https://relay.example/connect/callback\",\"mode\":\"direct_post\"},\"requestType\":\"authenticate\",\"responseKey\":{\"crv\":\"X25519\",\"kid\":\"HRJKUWDEPpZXEOqt_A2Yirmo4CRnmn66wuoW5IO1iog\",\"kty\":\"OKP\",\"x\":\"1gMaU5XqOCcM1dwZo1-swmxJBzUScz_D_s4c9XPpuEQ\"},\"state\":\"Lfiq53fzVXb4Ll7r5XHUXA\",\"supportedDidMethods\":[\"did:jwk\"]}",
+      "expectedRequestHash": "3hQV7uqqM-98HiIu9ZdsrI07BfjZNbP2ApwzaPfecfw"
+    }
+  ]
+}
